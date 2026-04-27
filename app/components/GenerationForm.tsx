@@ -14,21 +14,25 @@ import { range } from "lodash";
 import {
   DEFAULT_ASPECT_RATIO,
   DEFAULT_DURATION,
-  DEFAULT_FAL_MODEL,
+  DEFAULT_VIDEO_MODEL,
   DEFAULT_INDIC_LANGUAGE,
   DEFAULT_RESOLUTION,
   PROMPT_MAX_CHARS,
   PROMPT_MIN_CHARS,
+  RESOLUTIONS,
+  VIDEO_MODELS,
+  getVideoModelById,
+  isResolutionAllowed,
   type AspectRatio,
   type Duration,
-  type FalModelId,
   type IndicLanguageCode,
   type Resolution,
+  type VideoModelId,
 } from "@/lib/constants";
 import type {
   GenerationFormState,
+  GenerationStatus,
   OptimizePromptResponse,
-  SeedanceQueueStatus,
   SeedanceVideoOutput,
   SubmitGenerationResponse,
   UploadedAsset,
@@ -55,11 +59,12 @@ const GENERATE_AUDIO_OPTIONS = [
 
 const INITIAL_FORM: GenerationFormState = {
   prompt: "",
-  model: DEFAULT_FAL_MODEL,
+  model: DEFAULT_VIDEO_MODEL,
   resolution: DEFAULT_RESOLUTION,
   aspectRatio: DEFAULT_ASPECT_RATIO,
   duration: DEFAULT_DURATION,
   generateAudio: false,
+  webSearch: false,
   seed: "",
   language: DEFAULT_INDIC_LANGUAGE,
   referenceImages: [],
@@ -74,8 +79,8 @@ interface ResultState {
   videoUrl?: string;
   seed?: number | null;
   errorMessage?: string;
-  /** Live FAL queue status while polling. */
-  queueStatus?: SeedanceQueueStatus["status"];
+  /** Live provider task status while polling. */
+  queueStatus?: GenerationStatus["status"];
   queuePosition?: number | null;
   logs?: string[];
 }
@@ -133,6 +138,21 @@ export function GenerationForm() {
   );
 
   const referenceHint = useMemo(() => buildReferenceHint(form), [form]);
+
+  /** Active model object (provider, tier, maxResolution, supportsWebSearch). */
+  const activeModel = useMemo(
+    () => getVideoModelById(form.model),
+    [form.model],
+  );
+
+  /** Resolution options narrowed to whatever the selected tier supports. */
+  const resolutionOptionsForModel = useMemo(
+    () =>
+      RESOLUTIONS.filter((r) =>
+        isResolutionAllowed(r, activeModel.maxResolution),
+      ).map((value) => ({ value, label: value })),
+    [activeModel.maxResolution],
+  );
 
   const handleOptimize = useCallback(async () => {
     if (!form.prompt.trim()) {
@@ -224,13 +244,14 @@ export function GenerationForm() {
       return;
     }
 
-    setResult({ status: "generating", queueStatus: "IN_QUEUE" });
+    setResult({ status: "generating", queueStatus: "queued" });
 
     const abort = new AbortController();
     try {
-      // 1) Submit — returns request_id immediately. Holds the connection
-      //    only for the few seconds it takes FAL to acknowledge.
-      const { requestId, model } = await fetchJson<SubmitGenerationResponse>(
+      const activeModel = getVideoModelById(form.model);
+      // 1) Submit — returns task_id immediately. Holds the connection
+      //    only for the few seconds it takes the provider to acknowledge.
+      const { taskId, model } = await fetchJson<SubmitGenerationResponse>(
         "/api/generate-video",
         {
           method: "POST",
@@ -241,10 +262,11 @@ export function GenerationForm() {
             aspectRatio: form.aspectRatio,
             duration: form.duration,
             generateAudio: form.generateAudio,
+            webSearch: activeModel.supportsWebSearch ? form.webSearch : undefined,
             seed: parsedSeed,
-            referenceImageUrls: form.referenceImages.map((a) => a.absoluteUrl),
-            referenceVideoUrls: form.referenceVideos.map((a) => a.absoluteUrl),
-            referenceAudioUrls: form.referenceAudios.map((a) => a.absoluteUrl),
+            referenceImages: form.referenceImages.map((a) => ({ cdnUrls: a.cdnUrls })),
+            referenceVideos: form.referenceVideos.map((a) => ({ cdnUrls: a.cdnUrls })),
+            referenceAudios: form.referenceAudios.map((a) => ({ cdnUrls: a.cdnUrls })),
           }),
         },
       );
@@ -252,13 +274,14 @@ export function GenerationForm() {
       // 2) Poll status — short HTTP round-trips that survive Vercel's
       //    function timeout, give us live queue position + logs, and let
       //    the user navigate away and (eventually) resume.
-      const statusUrl = `/api/generation-status?requestId=${encodeURIComponent(requestId)}&model=${encodeURIComponent(model)}`;
-      const resultUrl = `/api/generation-result?requestId=${encodeURIComponent(requestId)}&model=${encodeURIComponent(model)}`;
+      const qs = `taskId=${encodeURIComponent(taskId)}&model=${encodeURIComponent(model)}`;
+      const statusUrl = `/api/generation-status?${qs}`;
+      const resultUrl = `/api/generation-result?${qs}`;
 
       let attempts = 0;
       while (attempts < POLL_MAX_ATTEMPTS) {
         attempts += 1;
-        const status = await fetchJson<SeedanceQueueStatus>(statusUrl);
+        const status = await fetchJson<GenerationStatus>(statusUrl);
         setResult((prev) => ({
           ...prev,
           status: "generating",
@@ -267,15 +290,27 @@ export function GenerationForm() {
           logs: status.logs.slice(-3),
         }));
 
-        if (status.status === "COMPLETED") {
-          // 3) Fetch the final result.
+        if (status.status === "failed") {
+          throw new Error(
+            status.logs[status.logs.length - 1] ??
+              `Generation failed (provider state: ${status.rawStatus}).`,
+          );
+        }
+        if (status.status === "completed") {
+          // 3) Fetch the final result. Server has already archived the
+          //    video to local disk and returns `localUrl` — prefer that
+          //    over the upstream URL so playback survives CDN expiry.
           const data = await fetchJson<SeedanceVideoOutput>(resultUrl);
           setResult({
             status: "ready",
-            videoUrl: data.videoUrl,
+            videoUrl: data.localUrl ?? data.videoUrl,
             seed: data.seed,
           });
-          toast.success("Video generated.");
+          toast.success(
+            data.localUrl
+              ? "Video generated and archived locally."
+              : "Video generated (local archive unavailable).",
+          );
           return;
         }
         await delay(POLL_INTERVAL_MS, abort.signal);
@@ -304,7 +339,16 @@ export function GenerationForm() {
             label="Model"
             options={MODEL_OPTIONS}
             value={form.model}
-            onValueChange={(v) => setField("model", v as FalModelId)}
+            onValueChange={(v) => {
+              setField("model", v as VideoModelId);
+              // If new model can't support current resolution, downgrade.
+              const next = getVideoModelById(v);
+              setForm((prev) =>
+                isResolutionAllowed(prev.resolution, next.maxResolution)
+                  ? prev
+                  : { ...prev, resolution: next.maxResolution },
+              );
+            }}
           />
           <Select
             label="Indic language (for prompt optimisation)"
@@ -314,8 +358,8 @@ export function GenerationForm() {
             searchable
           />
           <Select
-            label="Resolution"
-            options={RESOLUTION_OPTIONS}
+            label={`Resolution (max ${activeModel.maxResolution} for ${activeModel.tier})`}
+            options={resolutionOptionsForModel}
             value={form.resolution}
             onValueChange={(v) => setField("resolution", v as Resolution)}
           />
@@ -348,6 +392,24 @@ export function GenerationForm() {
             onValueChange={(v) => setField("generateAudio", v === "yes")}
           />
         </div>
+        {activeModel.supportsWebSearch && (
+          <div className="flex items-center justify-between gap-tatva-8 pt-tatva-2">
+            <div className="flex flex-col gap-tatva-1">
+              <Text as="label" variant="label-md">
+                Web search grounding
+              </Text>
+              <Text variant="body-sm" tone="secondary">
+                KIE-only. Lets Seedance ground references against live web
+                results — increases factuality for branded scenes.
+              </Text>
+            </div>
+            <ButtonGroup
+              items={GENERATE_AUDIO_OPTIONS}
+              value={form.webSearch ? "yes" : "no"}
+              onValueChange={(v) => setField("webSearch", v === "yes")}
+            />
+          </div>
+        )}
       </Section>
 
       <Section

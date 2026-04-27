@@ -2,13 +2,15 @@
  * Server-side file storage helpers.
  *
  * Files land in `public/<UPLOAD_DIR_NAME>/` so Next.js serves them
- * automatically at `/<UPLOAD_PUBLIC_PATH>/<filename>`. We do NOT add
- * a custom static-file route handler — that would defeat the point of
- * using Next.js's built-in `public/` serving.
+ * automatically at `/<UPLOAD_PUBLIC_PATH>/<filename>` for in-app previews.
+ *
+ * Each upload also pushes the buffer to **both provider CDNs** (FAL and
+ * KIE) so the user can switch providers at generate time without re-
+ * uploading. Provider uploads run in parallel; failure of one does not
+ * fail the whole upload — we just record which providers are reachable.
  */
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fal } from "@fal-ai/client";
 import { nanoid } from "nanoid";
 import {
   ASSET_LIMITS,
@@ -18,28 +20,9 @@ import {
 } from "./constants";
 import { buildAbsoluteUrl } from "./format-utils";
 import { probeDurationSeconds } from "./media-probe";
+import { falProvider } from "./providers/fal";
+import { kieProvider } from "./providers/kie";
 import type { UploadedAsset } from "./types";
-
-/** Pull a human-readable message from the FAL client's ApiError shape. */
-function extractFalUploadError(err: unknown): string {
-  if (!err || typeof err !== "object") return "Unknown FAL storage error.";
-  const e = err as Record<string, unknown>;
-  const body = e.body as Record<string, unknown> | undefined;
-  if (body && typeof body.detail === "string") return body.detail;
-  if (typeof e.message === "string") return e.message;
-  return "FAL storage upload failed.";
-}
-
-let falConfigured = false;
-function ensureFalConfigured(): void {
-  if (falConfigured) return;
-  const credentials = process.env.FAL_API_KEY;
-  if (!credentials) {
-    throw new Error("FAL_API_KEY is not configured on the server.");
-  }
-  fal.config({ credentials });
-  falConfigured = true;
-}
 
 /** Resolves the absolute upload directory on disk. */
 function getUploadDir(): string {
@@ -70,7 +53,7 @@ export interface SaveAssetParams {
 }
 
 export interface SaveAssetError {
-  code: "duration_invalid" | "probe_failed" | "fal_upload_failed";
+  code: "duration_invalid" | "probe_failed" | "no_provider_url";
   message: string;
 }
 
@@ -85,10 +68,22 @@ function durationOutOfRange(kind: AssetKind, seconds: number): boolean {
   return false;
 }
 
+/** Run a provider upload, returning null instead of throwing. */
+async function tryProviderUpload(
+  label: "fal" | "kie",
+  uploader: () => Promise<string>,
+): Promise<{ url: string | null; error: string | null }> {
+  try {
+    return { url: await uploader(), error: null };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : `${label} upload failed.`;
+    return { url: null, error: msg };
+  }
+}
+
 /**
  * Persists an uploaded file to disk, probes its duration with ffprobe
- * (for video/audio), and returns metadata + URLs. Files that fail the
- * duration check are deleted before we return — no orphans.
+ * (for video/audio), and pushes copies to FAL + KIE CDNs in parallel.
  *
  * Caller is responsible for prior MIME/size validation.
  */
@@ -105,10 +100,8 @@ export async function saveAsset({
   const filename = `${kind}-${safeStem(file.name)}-${id}${ext}`;
   const absolutePath = path.join(uploadDir, filename);
 
-  // Read the file bytes once — we need them for both the local copy AND
-  // the FAL CDN upload. The `File` from `request.formData()` is backed by
-  // a single-read stream in Node.js; calling `arrayBuffer()` twice (or
-  // passing the spent File to `fal.storage.upload`) silently yields 0 bytes.
+  // Read the file bytes once. The `File` from `request.formData()` is
+  // backed by a single-read stream — calling arrayBuffer() twice gives 0.
   const buffer = Buffer.from(await file.arrayBuffer());
   await writeFile(absolutePath, buffer);
 
@@ -121,7 +114,8 @@ export async function saveAsset({
         ok: false,
         error: {
           code: "probe_failed",
-          message: "Could not read media duration. The file may be corrupted or use an unsupported codec.",
+          message:
+            "Could not read media duration. The file may be corrupted or use an unsupported codec.",
         },
       };
     }
@@ -141,29 +135,35 @@ export async function saveAsset({
     }
   }
 
-  // Upload to FAL storage so Seedance can fetch the asset publicly. The
-  // local copy in /public/uploads/ is what we serve to the user's browser
-  // for previews; the FAL CDN URL is what the FAL inference API consumes.
-  // Without this, FAL servers cannot reach `http://localhost:3000/...`.
-  //
-  // We build a *fresh* File from the buffer we already read — the original
-  // File object's body stream is consumed and cannot be re-read.
-  let falUrl: string;
-  try {
-    ensureFalConfigured();
-    const freshFile = new File([buffer], file.name, { type: file.type });
-    falUrl = await fal.storage.upload(freshFile);
-  } catch (err: unknown) {
+  // Push to BOTH providers in parallel so the user can pick either at
+  // generate time without re-uploading. A provider that fails is recorded
+  // as missing; we only fail the whole upload if both are missing.
+  const [falResult, kieResult] = await Promise.all([
+    tryProviderUpload("fal", () =>
+      falProvider.uploadFromBuffer(buffer, file.name, file.type),
+    ),
+    tryProviderUpload("kie", () =>
+      kieProvider.uploadFromBuffer(buffer, file.name, file.type),
+    ),
+  ]);
+
+  if (!falResult.url && !kieResult.url) {
     await unlink(absolutePath).catch(() => undefined);
-    const msg = extractFalUploadError(err);
     return {
       ok: false,
       error: {
-        code: "fal_upload_failed",
-        message: `Could not upload to FAL CDN: ${msg}`,
+        code: "no_provider_url",
+        message: `Both CDN uploads failed. FAL: ${falResult.error ?? "?"}; KIE: ${kieResult.error ?? "?"}.`,
       },
     };
   }
+
+  const cdnUrls: UploadedAsset["cdnUrls"] = {};
+  if (falResult.url) cdnUrls.fal = falResult.url;
+  if (kieResult.url) cdnUrls.kie = kieResult.url;
+
+  // `absoluteUrl` is the legacy default — prefer the FAL URL when present.
+  const absoluteUrl = falResult.url ?? kieResult.url ?? "";
 
   const publicUrl = `${UPLOAD_PUBLIC_PATH}/${filename}`;
   return {
@@ -175,13 +175,8 @@ export async function saveAsset({
       mimeType: file.type,
       sizeBytes: file.size,
       publicUrl,
-      // `absoluteUrl` is the URL handed to FAL inference. We point it at
-      // FAL storage rather than our own origin so it works on localhost
-      // (FAL servers cannot reach a developer's machine) and on Vercel
-      // (no extra egress through our box).
-      absoluteUrl: falUrl,
-      // `localPreviewUrl` is the same-origin URL we use for the in-app
-      // preview. Built from the request origin so it works from any host.
+      absoluteUrl,
+      cdnUrls,
       localPreviewUrl: buildAbsoluteUrl(origin, publicUrl),
       durationSeconds,
     },

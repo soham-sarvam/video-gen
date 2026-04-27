@@ -7,10 +7,11 @@ import type {
   AspectRatio,
   AssetKind,
   Duration,
-  FalModelId,
   IndicLanguageCode,
   Resolution,
+  VideoModelId,
 } from "./constants";
+import type { TaskStatus } from "./providers/types";
 
 // ---------------------------------------------------------------------------
 // API response envelope (per ApiResponse pattern in patterns.md)
@@ -38,11 +39,15 @@ export interface UploadedAsset {
   /** Public URL relative to the deployment origin (e.g. /uploads/abc.png). */
   publicUrl: string;
   /**
-   * URL handed to FAL inference. Points to FAL CDN (uploaded via
-   * fal.storage.upload), so FAL servers can fetch the asset even when
-   * the dev box is on localhost.
+   * Default CDN URL for backwards compat (currently FAL). Routes that know
+   * the active provider should prefer `cdnUrls[provider]` instead.
    */
   absoluteUrl: string;
+  /** Per-provider CDN URLs — server picks the right one at submit time. */
+  cdnUrls: {
+    fal?: string;
+    kie?: string;
+  };
   /** Same-origin URL used for in-app previews (built from request host). */
   localPreviewUrl: string;
   /** Duration in seconds — populated by ffprobe for video/audio, null for images. */
@@ -58,11 +63,12 @@ export interface UploadResponse {
 // ---------------------------------------------------------------------------
 export interface GenerationFormState {
   prompt: string;
-  model: FalModelId;
+  model: VideoModelId;
   resolution: Resolution;
   aspectRatio: AspectRatio;
   duration: Duration;
   generateAudio: boolean;
+  webSearch: boolean;
   seed: string; // kept as string for the input; coerced to int server-side
   language: IndicLanguageCode;
   referenceImages: UploadedAsset[];
@@ -71,53 +77,52 @@ export interface GenerationFormState {
 }
 
 // ---------------------------------------------------------------------------
-// Seedance request (server → fal.ai)
+// Seedance request (form → server)
 // ---------------------------------------------------------------------------
 export interface SeedanceRequest {
   prompt: string;
-  model: FalModelId;
+  model: VideoModelId;
   resolution: Resolution;
   aspectRatio: AspectRatio;
   duration: Duration;
   generateAudio: boolean;
+  webSearch?: boolean;
   seed?: number;
-  referenceImageUrls: string[];
-  referenceVideoUrls: string[];
-  referenceAudioUrls: string[];
+  /** Asset references — server picks per-provider URL from `cdnUrls`. */
+  referenceImages: { cdnUrls: UploadedAsset["cdnUrls"] }[];
+  referenceVideos: { cdnUrls: UploadedAsset["cdnUrls"] }[];
+  referenceAudios: { cdnUrls: UploadedAsset["cdnUrls"] }[];
 }
 
 export interface SeedanceVideoOutput {
+  /** Provider-hosted URL (TTL'd — FAL/KIE both expire). */
   videoUrl: string;
+  /** Same-origin URL of the archived copy (survives provider TTL). */
+  localUrl: string | null;
   seed: number | null;
 }
 
 // ---------------------------------------------------------------------------
-// FAL queue (submit → status → result)
+// Generation queue (submit → status → result), provider-agnostic
 // ---------------------------------------------------------------------------
-/**
- * FAL's documented queue states. We surface the raw string so future
- * states added by FAL pass through without code changes here.
- * https://fal.ai/models/bytedance/seedance-2.0/fast/reference-to-video/api#queue-status
- */
-export type SeedanceQueueState =
-  | "IN_QUEUE"
-  | "IN_PROGRESS"
-  | "COMPLETED"
-  | (string & {});
-
-export interface SeedanceQueueStatus {
-  requestId: string;
-  status: SeedanceQueueState;
-  /** Position in the FAL queue when status === "IN_QUEUE". */
+export interface GenerationStatus {
+  taskId: string;
+  status: TaskStatus;
+  /** Position in queue when status === "queued"; null otherwise. */
   queuePosition: number | null;
-  /** Live log lines (when logs are requested). */
   logs: string[];
+  /** Provider-native raw status string for debugging. */
+  rawStatus: string;
 }
 
 export interface SubmitGenerationResponse {
-  requestId: string;
-  model: FalModelId;
+  taskId: string;
+  model: VideoModelId;
 }
+
+// Backward-compat aliases for code still importing the old names.
+/** @deprecated use GenerationStatus */
+export type SeedanceQueueStatus = GenerationStatus;
 
 // ---------------------------------------------------------------------------
 // Gemini prompt-optimizer

@@ -1,33 +1,34 @@
 "use client";
 
 import { Button, EmptyState, Skeleton, Text } from "@sarvam/tatva";
-import type { SeedanceQueueState } from "@/lib/types";
+import type { TaskStatus } from "@/lib/providers/types";
 
 interface VideoResultPanelProps {
   status: "idle" | "generating" | "ready" | "error";
   videoUrl?: string;
   seed?: number | null;
   errorMessage?: string;
-  /** Live FAL queue status while polling. */
-  queueStatus?: SeedanceQueueState;
+  /** Live provider task status while polling. */
+  queueStatus?: TaskStatus;
   queuePosition?: number | null;
-  /** Last few log lines from FAL. */
+  /** Last few log lines from the provider. */
   logs?: string[];
   onReset: () => void;
 }
 
 function describeQueueStatus(
-  state: SeedanceQueueState | undefined,
+  state: TaskStatus | undefined,
   position: number | null | undefined,
 ): string {
-  if (!state) return "Submitting to FAL queue…";
-  if (state === "IN_QUEUE") {
+  if (!state) return "Submitting job to provider…";
+  if (state === "queued") {
     return position != null
-      ? `Waiting in FAL queue — position ${position}.`
-      : "Waiting in FAL queue…";
+      ? `Waiting in queue — position ${position}.`
+      : "Waiting in provider queue…";
   }
-  if (state === "IN_PROGRESS") return "Seedance is rendering your video…";
-  if (state === "COMPLETED") return "Finalising result…";
+  if (state === "running") return "Seedance is rendering your video…";
+  if (state === "completed") return "Finalising result…";
+  if (state === "failed") return "Generation failed.";
   return `Queue status: ${state}`;
 }
 

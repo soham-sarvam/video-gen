@@ -1,31 +1,42 @@
 /**
- * Proxies fal.queue.status — clients poll this every ~2.5s while a
- * Seedance job is in progress.
+ * Proxies the active provider's status endpoint. Clients poll this every
+ * ~2.5s while a generation job is running. Provider is determined by the
+ * model id, so the same route handles both FAL and KIE jobs.
  *
  * https://fal.ai/models/bytedance/seedance-2.0/fast/reference-to-video/api#queue-status
+ * KIE: GET /api/v1/common/get-task-detail?taskId=...
  */
 import type { NextRequest } from "next/server";
-import { getSeedanceJobStatus } from "@/lib/fal-client";
-import { FAL_MODELS, type FalModelId } from "@/lib/constants";
+import { getVideoModelById } from "@/lib/constants";
+import { getProvider } from "@/lib/providers";
+import type { GenerationStatus } from "@/lib/types";
 import { getErrorMessage, jsonError, jsonOk } from "@/lib/server-utils";
 
 export const runtime = "nodejs";
-// Status calls are fast — single HTTP round-trip to FAL.
+// Single HTTP round-trip to the provider — fast.
 export const maxDuration = 30;
 
-const MODEL_IDS: ReadonlySet<string> = new Set(FAL_MODELS.map((m) => m.value));
-
 export async function GET(request: NextRequest): Promise<Response> {
-  const requestId = request.nextUrl.searchParams.get("requestId");
-  const model = request.nextUrl.searchParams.get("model");
+  const taskId =
+    request.nextUrl.searchParams.get("taskId") ??
+    request.nextUrl.searchParams.get("requestId");
+  const modelId = request.nextUrl.searchParams.get("model");
 
-  if (!requestId) return jsonError("requestId query parameter is required.", 400);
-  if (!model) return jsonError("model query parameter is required.", 400);
-  if (!MODEL_IDS.has(model)) return jsonError(`Unknown model "${model}".`, 400);
+  if (!taskId) return jsonError("taskId query parameter is required.", 400);
+  if (!modelId) return jsonError("model query parameter is required.", 400);
+
+  let model;
+  try {
+    model = getVideoModelById(modelId);
+  } catch (err) {
+    return jsonError(getErrorMessage(err), 400);
+  }
 
   try {
-    const status = await getSeedanceJobStatus(model as FalModelId, requestId);
-    return jsonOk(status);
+    const provider = getProvider(model);
+    const status = await provider.status(taskId, model);
+    const payload: GenerationStatus = status;
+    return jsonOk(payload);
   } catch (err: unknown) {
     return jsonError(`Status check failed: ${getErrorMessage(err)}`, 502);
   }

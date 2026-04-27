@@ -10,7 +10,7 @@ export default function Home() {
           left={{
             title: "Indic Video Studio",
             subtitle:
-              "Seedance 2.0 reference-to-video · Gemini-tuned Indic prompts · Bulbul-ready audio",
+              "Seedance 2.0 reference-to-video · Gemini-tuned Indic prompts · Lipsync-ready audio",
           }}
         />
       </div>

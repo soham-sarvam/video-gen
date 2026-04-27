@@ -1,39 +1,64 @@
 /**
  * Centralized constants for the Seedance 2.0 reference-to-video pipeline.
- * Source of truth: fal-seedance-api.md + seedance_indic_video_roadmap.md (§2.3)
  *
- * Keep this file pure (no runtime dependencies). Types live in `./types.ts`.
+ * Two providers are supported:
+ *   - FAL  (`fal.ai/models/bytedance/seedance-2.0/...`) — used `@fal-ai/client`
+ *   - KIE  (`api.kie.ai/api/v1/jobs/createTask`) — REST + polling
+ *
+ * Each provider exposes Standard and Fast tiers; tier caps the maximum
+ * resolution. The form's resolution selector filters based on the selected
+ * model's `maxResolution`.
+ *
+ * Sources of truth:
+ *   - fal-seedance-api.md (FAL OpenAPI snippet)
+ *   - kie-seedream-file-upload.md (KIE OpenAPI + file upload guide)
+ *   - seedance_indic_video_roadmap.md §2.3
  */
 
 // ---------------------------------------------------------------------------
-// FAL endpoints — only Reference-to-Video Standard and Fast are exposed.
+// Providers
 // ---------------------------------------------------------------------------
-export const FAL_MODELS = [
-  {
-    value: "bytedance/seedance-2.0/reference-to-video",
-    label: "Reference to Video — Standard",
-    description: "1080p, ~2–4 min wall clock. Use for the final render.",
-    tier: "standard",
-  },
-  {
-    value: "bytedance/seedance-2.0/fast/reference-to-video",
-    label: "Reference to Video — Fast",
-    description: "720p, ~30–60s wall clock. Use for iteration.",
-    tier: "fast",
-  },
-] as const;
+export type Provider = "fal" | "kie";
+export type ModelTier = "standard" | "fast";
 
-export const DEFAULT_FAL_MODEL: FalModelId =
-  "bytedance/seedance-2.0/fast/reference-to-video";
-
-export type FalModelId = (typeof FAL_MODELS)[number]["value"];
+export interface VideoModel {
+  /** Stable id used in form state, API requests, Select option value. */
+  readonly value: string;
+  readonly label: string;
+  readonly description: string;
+  readonly provider: Provider;
+  readonly tier: ModelTier;
+  /** Provider-native model identifier (FAL endpoint or KIE model string). */
+  readonly slug: string;
+  /** Maximum resolution this tier supports. Resolution UI is filtered. */
+  readonly maxResolution: Resolution;
+  /** Whether this model accepts a `web_search` flag (KIE-only today). */
+  readonly supportsWebSearch: boolean;
+}
 
 // ---------------------------------------------------------------------------
-// Seedance generation parameters
+// Resolutions / aspect ratios / durations
 // ---------------------------------------------------------------------------
 export const RESOLUTIONS = ["480p", "720p", "1080p"] as const;
 export type Resolution = (typeof RESOLUTIONS)[number];
 export const DEFAULT_RESOLUTION: Resolution = "720p";
+
+/**
+ * Order matters: the form filters allowed resolutions up to `maxResolution`
+ * by index. Keep ascending.
+ */
+const RESOLUTION_INDEX: Record<Resolution, number> = {
+  "480p": 0,
+  "720p": 1,
+  "1080p": 2,
+};
+
+export function isResolutionAllowed(
+  resolution: Resolution,
+  max: Resolution,
+): boolean {
+  return RESOLUTION_INDEX[resolution] <= RESOLUTION_INDEX[max];
+}
 
 export const ASPECT_RATIOS = [
   "auto",
@@ -64,6 +89,75 @@ export const DURATIONS = [
 ] as const;
 export type Duration = (typeof DURATIONS)[number];
 export const DEFAULT_DURATION: Duration = "auto";
+
+// ---------------------------------------------------------------------------
+// Models — FAL (Standard + Fast) and KIE (Standard + Fast).
+// ---------------------------------------------------------------------------
+export const VIDEO_MODELS: readonly VideoModel[] = [
+  {
+    value: "fal:standard",
+    label: "FAL · Reference to Video — Standard",
+    description: "1080p, ~2–4 min wall clock. Use for the final render.",
+    provider: "fal",
+    tier: "standard",
+    slug: "bytedance/seedance-2.0/reference-to-video",
+    maxResolution: "1080p",
+    supportsWebSearch: false,
+  },
+  {
+    value: "fal:fast",
+    label: "FAL · Reference to Video — Fast",
+    description: "720p, ~30–60s wall clock. Use for iteration.",
+    provider: "fal",
+    tier: "fast",
+    slug: "bytedance/seedance-2.0/fast/reference-to-video",
+    maxResolution: "720p",
+    supportsWebSearch: false,
+  },
+  {
+    value: "kie:standard",
+    label: "KIE · Bytedance Seedance 2.0 — Standard",
+    description: "1080p, supports web search grounding.",
+    provider: "kie",
+    tier: "standard",
+    slug: "bytedance/seedance-2",
+    maxResolution: "1080p",
+    supportsWebSearch: true,
+  },
+  {
+    value: "kie:fast",
+    label: "KIE · Bytedance Seedance 2.0 — Fast",
+    description: "720p, supports web search grounding.",
+    provider: "kie",
+    tier: "fast",
+    slug: "bytedance/seedance-2-fast",
+    maxResolution: "720p",
+    supportsWebSearch: true,
+  },
+] as const;
+
+export type VideoModelId = (typeof VIDEO_MODELS)[number]["value"];
+
+export const DEFAULT_VIDEO_MODEL: VideoModelId = "fal:fast";
+
+/** Throws if id is unknown. Server boundary uses this. */
+export function getVideoModelById(id: string): VideoModel {
+  const found = VIDEO_MODELS.find((m) => m.value === id);
+  if (!found) {
+    throw new Error(`Unknown video model id: ${id}`);
+  }
+  return found;
+}
+
+// ---------------------------------------------------------------------------
+// Backward-compat aliases (retain old names so unrelated imports still work)
+// ---------------------------------------------------------------------------
+/** @deprecated Prefer VIDEO_MODELS. Kept for legacy imports. */
+export const FAL_MODELS = VIDEO_MODELS.filter((m) => m.provider === "fal");
+/** @deprecated Prefer VideoModelId. */
+export type FalModelId = VideoModelId;
+/** @deprecated Prefer DEFAULT_VIDEO_MODEL. */
+export const DEFAULT_FAL_MODEL: VideoModelId = DEFAULT_VIDEO_MODEL;
 
 // ---------------------------------------------------------------------------
 // Asset categories (mirrors Seedance reference_*_urls fields)
@@ -131,11 +225,6 @@ export const PROMPT_MIN_CHARS = 10;
 
 /**
  * Role words/phrases that must accompany every @-reference (validator rule).
- * Roadmap §3.2 lists 4 canonical phrasings, but practical Gemini output uses
- * a wider grammatical surface — possessives (`@Video1's`), prepositions
- * (`from`, `using`), action verbs (`match`, `mirror`). Permissive list
- * avoids false-positive validator warnings while still catching the real
- * failure mode (a bare `@Video1` floating with no role).
  */
 export const REFERENCE_ROLE_WORDS = [
   "as the",
@@ -146,7 +235,7 @@ export const REFERENCE_ROLE_WORDS = [
   "referencing",
   "using the",
   "using",
-  "use ", // "Use @Audio1 for ..." — natural english
+  "use ",
   "uses",
   "apply",
   "applies",
@@ -162,7 +251,7 @@ export const REFERENCE_ROLE_WORDS = [
   "inherit",
   "guided by",
   "drawn from",
-  "'s", // possessive: "@Video1's character/motion/scene"
+  "'s",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -192,7 +281,33 @@ export const UPLOAD_DIR_NAME = "uploads";
 /** Public URL path that maps to UPLOAD_DIR_NAME. */
 export const UPLOAD_PUBLIC_PATH = "/uploads";
 
+/**
+ * Subfolder for archived generations. Lives under `public/uploads/` so it's
+ * served by Next.js at `/uploads/generations/<filename>` and gets gitignored
+ * by the existing `/public/uploads/` rule.
+ */
+export const GENERATIONS_SUBDIR = "generations";
+
 // ---------------------------------------------------------------------------
 // Gemini
 // ---------------------------------------------------------------------------
 export const GEMINI_MODEL = "gemini-2.5-flash";
+
+// ---------------------------------------------------------------------------
+// KIE.ai endpoints + thresholds
+// ---------------------------------------------------------------------------
+export const KIE_API_BASE = "https://api.kie.ai";
+export const KIE_FILE_BASE = "https://kieai.redpandaai.co";
+export const KIE_FILE_BASE64_PATH = "/api/file-base64-upload";
+export const KIE_FILE_STREAM_PATH = "/api/file-stream-upload";
+export const KIE_CREATE_TASK_PATH = "/api/v1/jobs/createTask";
+/**
+ * Polled GET endpoint for task status/result. KIE's docs link calls this
+ * "Get Task Details" but the actual API path is `/api/v1/jobs/recordInfo`.
+ * Verified empirically — `/api/v1/common/get-task-detail` returns 404.
+ */
+export const KIE_GET_TASK_DETAIL_PATH = "/api/v1/jobs/recordInfo";
+/** Below this threshold → base64 upload; at-or-above → stream upload. */
+export const KIE_BASE64_MAX_BYTES = 8 * MB;
+/** Always run KIE NSFW filter — non-negotiable per project policy. */
+export const KIE_NSFW_CHECKER_DEFAULT = true;

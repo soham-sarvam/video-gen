@@ -5,14 +5,14 @@
 import {
   ASPECT_RATIOS,
   DURATIONS,
-  FAL_MODELS,
   INDIC_LANGUAGES,
   RESOLUTIONS,
+  VIDEO_MODELS,
   type AspectRatio,
   type Duration,
-  type FalModelId,
   type IndicLanguageCode,
   type Resolution,
+  type VideoModelId,
 } from "@/lib/constants";
 
 interface Option<V extends string> {
@@ -21,7 +21,7 @@ interface Option<V extends string> {
   description?: string;
 }
 
-export const MODEL_OPTIONS: Option<FalModelId>[] = FAL_MODELS.map((m) => ({
+export const MODEL_OPTIONS: Option<VideoModelId>[] = VIDEO_MODELS.map((m) => ({
   value: m.value,
   label: m.label,
   description: m.description,

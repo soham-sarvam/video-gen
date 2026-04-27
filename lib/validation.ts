@@ -12,13 +12,13 @@ import {
   ASSET_LIMITS,
   type AssetKind,
   DURATIONS,
-  FAL_MODELS,
   INDIC_LANGUAGES,
   MAX_TOTAL_ASSETS,
   PROMPT_MAX_CHARS,
   PROMPT_MIN_CHARS,
   REFERENCE_ROLE_WORDS,
   RESOLUTIONS,
+  VIDEO_MODELS,
 } from "./constants";
 import { formatBytes } from "./format-utils";
 
@@ -173,23 +173,44 @@ export function validatePromptReferences(
 // ---------------------------------------------------------------------------
 // Zod schemas for API payloads
 // ---------------------------------------------------------------------------
-const falModelIds = FAL_MODELS.map((m) => m.value) as [string, ...string[]];
+const videoModelIds = VIDEO_MODELS.map((m) => m.value) as [string, ...string[]];
 const indicCodes = INDIC_LANGUAGES.map((l) => l.value) as [string, ...string[]];
+
+const cdnUrlsSchema = z
+  .object({
+    fal: z.string().url().optional(),
+    kie: z.string().url().optional(),
+  })
+  .refine((v) => Boolean(v.fal || v.kie), {
+    message: "Each reference must carry at least one provider CDN URL.",
+  });
 
 export const generateVideoSchema = z.object({
   prompt: z
     .string()
     .min(PROMPT_MIN_CHARS, `Prompt must be at least ${PROMPT_MIN_CHARS} characters.`)
     .max(PROMPT_MAX_CHARS, `Prompt cannot exceed ${PROMPT_MAX_CHARS} characters.`),
-  model: z.enum(falModelIds),
+  model: z.enum(videoModelIds),
   resolution: z.enum(RESOLUTIONS),
   aspectRatio: z.enum(ASPECT_RATIOS),
   duration: z.enum(DURATIONS),
   generateAudio: z.boolean(),
+  webSearch: z.boolean().optional(),
   seed: z.number().int().nonnegative().optional(),
-  referenceImageUrls: z.array(z.string().url()).max(ASSET_LIMITS.image.maxCount),
-  referenceVideoUrls: z.array(z.string().url()).max(ASSET_LIMITS.video.maxCount),
-  referenceAudioUrls: z.array(z.string().url()).max(ASSET_LIMITS.audio.maxCount),
+  referenceImages: z
+    .array(z.object({ cdnUrls: cdnUrlsSchema }))
+    .max(ASSET_LIMITS.image.maxCount),
+  referenceVideos: z
+    .array(z.object({ cdnUrls: cdnUrlsSchema }))
+    .max(ASSET_LIMITS.video.maxCount),
+  referenceAudios: z
+    .array(z.object({ cdnUrls: cdnUrlsSchema }))
+    .max(ASSET_LIMITS.audio.maxCount),
+});
+
+export const taskQuerySchema = z.object({
+  taskId: z.string().min(1),
+  model: z.enum(videoModelIds),
 });
 
 export const optimizePromptSchema = z.object({
