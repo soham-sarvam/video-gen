@@ -1,4 +1,19 @@
+/* @sarvam/tatva setup */
+/* =============================================================================
+ * Sarvam UI (Tatva) Design System - Tailwind v4 Setup
+ * 
+ * This imports the design system theme which includes:
+ *   - All design tokens (colors, spacing, typography, etc.)
+ *   - CSS variables for light/dark mode
+ *   - Base component styles
+ * 
+ * The @source directive tells Tailwind to scan the component library
+ * for classes used in pre-built components.
+ * ============================================================================= */
+
 @import "tailwindcss";
+@import "@sarvam/tatva/theme.css";
+@source "../node_modules/@sarvam/tatva/dist/**/*.{js,mjs}";
 
 :root {
   --background: #ffffff;

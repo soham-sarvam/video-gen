@@ -39,3 +39,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# locally stored uploads (served via /uploads/* by Next.js)
+/public/uploads/
+
+# tooling caches
+/.agent/
+/.cursor/
+.playwright-mcp/
