@@ -7,17 +7,7 @@
  * No temp files needed — ffmpeg supports pipe:0 / pipe:1.
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import path from "node:path";
-import ffmpegStaticPath from "ffmpeg-static";
-
-function resolveFfmpegPath(): string {
-  const reported = ffmpegStaticPath as unknown as string | null;
-  if (reported && existsSync(reported)) return reported;
-  // Fallback for Next.js bundle relocation (mirrors lib/media-probe.ts pattern)
-  const binName = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
-  return path.join(process.cwd(), "node_modules", "ffmpeg-static", binName);
-}
+import { resolveFfmpegPath } from "@/lib/story/ffmpeg-path";
 
 export interface EncodeOptions {
   /** Maximum output duration in seconds. Hard clamp via `-t`. Default 14. */
