@@ -38,18 +38,34 @@ export async function synthesizeBeatPrompt(
     tier: input.tier,
   });
 
+  const b = input.beatOutline;
   const userParts: string[] = [
-    `Beat ${input.beatOutline.index} of ${input.story.beats.length || "N"} (${input.beatOutline.durationSeconds}s, ${input.beatOutline.shotType}).`,
-    `One-line summary: ${input.beatOutline.oneLineSummary}.`,
-    `BGM intensity: ${input.beatOutline.bgmIntensity}.`,
-    `Voice timbre speaker: ${input.story.voiceTimbreSpeaker}.`,
+    `Beat ${b.index} of ${input.story.beats.length || "N"} (${b.durationSeconds}s, ${b.shotType}, ${b.beatType}).`,
+    ``,
+    `## Summary`,
+    `${b.oneLineSummary}`,
+    ``,
+    `## Scene Description`,
+    `${b.sceneDescription}`,
+    ``,
+    `## Camera Direction`,
+    `${b.cameraDirection}`,
+    ``,
+    `## Lighting`,
+    `${b.lightingNotes}`,
+    ``,
+    `## Audio Direction`,
+    `${b.audioDirection}`,
+    ``,
+    `## Parameters`,
+    `BGM intensity: ${b.bgmIntensity}`,
+    `Voice timbre speaker: ${input.story.voiceTimbreSpeaker}`,
   ];
-  if (input.beatOutline.hasDialogue && input.beatOutline.dialogue) {
-    userParts.push(`Dialogue (use this verbatim, in double quotes): "${input.beatOutline.dialogue.text}".`);
-    userParts.push(`Spoken in: ${input.beatOutline.dialogue.languageCode}.`);
+  if (b.hasDialogue && b.dialogue) {
+    userParts.push(``, `## Dialogue`, `(use verbatim, in double quotes): "${b.dialogue.text}"`, `Spoken in: ${b.dialogue.languageCode}`);
   }
   if (input.previousBeat) {
-    userParts.push(`Previous beat ended on: "${input.previousBeat.endStateDescription ?? input.previousBeat.oneLineSummary}".`);
+    userParts.push(``, `## Continuity`, `Previous beat ended on: "${input.previousBeat.endStateDescription ?? input.previousBeat.oneLineSummary}"`);
   }
   if (input.tier === "frame-exact-motion-match") {
     userParts.push(`Use the previous beat's last frame as the first frame; visually continuous boundary.`);

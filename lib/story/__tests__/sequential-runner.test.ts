@@ -46,6 +46,13 @@ vi.mock("../end-state-describer", () => ({
 import { sequentialRunner } from "../runners/sequential-runner";
 import type { StoryOutline } from "../types";
 
+const FIX = {
+  sceneDescription: "A test scene with warm lighting and detailed environment.",
+  cameraDirection: "Medium shot, slow push-in, eye-level, 50mm lens.",
+  lightingNotes: "Warm golden hour sidelight, soft fill from ambient sky.",
+  audioDirection: "Ambient: gentle wind. BGM: soft piano at low intensity.",
+} as const;
+
 const OUTLINE: StoryOutline = {
   storyId: "x",
   mode: "quality",
@@ -53,25 +60,32 @@ const OUTLINE: StoryOutline = {
   language: "hi-IN",
   stylePackId: "01-cinematic",
   voiceTimbreSpeaker: "shubh",
+  resolution: "720p",
+  aspectRatio: "16:9",
+  generateAudio: true,
   beats: [
     {
       index: 1,
       durationSeconds: 15,
       oneLineSummary: "wide opener",
+      beatType: "establishing",
       hasDialogue: false,
       role: "opener",
       shotType: "wide",
       bgmIntensity: "low",
+      ...FIX,
     },
     {
       index: 2,
       durationSeconds: 15,
       oneLineSummary: "close-up reveal",
+      beatType: "dialogue",
       hasDialogue: true,
       dialogue: { text: "नमस्ते।", speaker: "shubh", languageCode: "hi-IN" },
       role: "continuation",
       shotType: "closeup",
       bgmIntensity: "low",
+      ...FIX,
     },
   ],
 };

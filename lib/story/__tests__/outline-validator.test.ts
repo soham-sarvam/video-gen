@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { validateOutline } from "../outline-validator";
 import type { StoryOutline } from "../types";
 
+const FIX = {
+  sceneDescription: "A test scene with warm lighting and detailed environment.",
+  cameraDirection: "Medium shot, slow push-in, eye-level, 50mm lens.",
+  lightingNotes: "Warm golden hour sidelight, soft fill from ambient sky.",
+  audioDirection: "Ambient: gentle wind. BGM: soft piano at low intensity.",
+} as const;
+
 const baseOutline: StoryOutline = {
   storyId: "x",
   mode: "quality",
@@ -9,24 +16,31 @@ const baseOutline: StoryOutline = {
   language: "hi-IN",
   stylePackId: "01-cinematic",
   voiceTimbreSpeaker: "shubh",
+  resolution: "720p",
+  aspectRatio: "16:9",
+  generateAudio: true,
   beats: [
     {
       index: 1,
       durationSeconds: 15,
       oneLineSummary: "open",
+      beatType: "establishing",
       hasDialogue: false,
       role: "opener",
       shotType: "wide",
       bgmIntensity: "low",
+      ...FIX,
     },
     {
       index: 2,
       durationSeconds: 15,
       oneLineSummary: "close",
+      beatType: "b-roll",
       hasDialogue: false,
       role: "continuation",
       shotType: "closeup",
       bgmIntensity: "low",
+      ...FIX,
     },
   ],
 };
@@ -38,7 +52,7 @@ describe("validateOutline", () => {
   });
 
   it("flags durations not summing to total", () => {
-    const bad = { ...baseOutline, beats: [...baseOutline.beats, { ...baseOutline.beats[0], index: 3, role: "continuation" as const }] };
+    const bad = { ...baseOutline, beats: [...baseOutline.beats, { ...baseOutline.beats[0], index: 3, role: "continuation" as const, beatType: "b-roll" as const }] };
     const errs = validateOutline(bad, "kie:fast");
     expect(errs.some((e) => /sum/i.test(e))).toBe(true);
   });
@@ -62,6 +76,7 @@ describe("validateOutline", () => {
         baseOutline.beats[0],
         {
           ...baseOutline.beats[1],
+          beatType: "dialogue" as const,
           hasDialogue: true,
           dialogue: { text: "incomplete sentence", speaker: "shubh" as const, languageCode: "hi-IN" as const },
         },

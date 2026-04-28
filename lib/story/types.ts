@@ -19,6 +19,16 @@ export type ShotType =
   | "insert"
   | "over_the_shoulder";
 
+export type BeatType =
+  | "establishing"
+  | "dialogue"
+  | "b-roll"
+  | "action"
+  | "transition"
+  | "montage"
+  | "reaction"
+  | "cutaway";
+
 /** Continuity tier for a single beat. */
 export type ContinuityTier =
   | "fresh"
@@ -35,6 +45,7 @@ export interface BeatOutline {
   index: number;
   durationSeconds: number;
   oneLineSummary: string;
+  beatType: BeatType;
   hasDialogue: boolean;
   dialogue?: BeatDialogue;
   role: "opener" | "continuation";
@@ -42,6 +53,14 @@ export interface BeatOutline {
   pinFrame?: boolean;
   shotType: ShotType;
   bgmIntensity: BgmIntensity;
+  /** Detailed visual scene description: environment, props, colors, textures. */
+  sceneDescription: string;
+  /** Camera direction: movement, angle, lens, speed. */
+  cameraDirection: string;
+  /** Lighting and color grading notes. */
+  lightingNotes: string;
+  /** Audio direction: SFX, ambient, music cues, voice tone. */
+  audioDirection: string;
   /** Fast mode only — full Seedance prompt baked at outline time. */
   fullPrompt?: string;
 }
@@ -53,6 +72,9 @@ export interface StoryOutline {
   language: IndicLanguageCode;
   stylePackId: string;
   voiceTimbreSpeaker: BulbulSpeaker;
+  resolution: Resolution;
+  aspectRatio: AspectRatio;
+  generateAudio: boolean;
   beats: BeatOutline[];
 }
 
@@ -92,6 +114,9 @@ export interface StoryRun {
   language: IndicLanguageCode;
   stylePackId: string;
   voiceTimbreSpeaker: BulbulSpeaker;
+  resolution: Resolution;
+  aspectRatio: AspectRatio;
+  generateAudio: boolean;
   beats: BeatRun[];
   finalVideoUrl?: string;
   finalLocalUrl?: string;

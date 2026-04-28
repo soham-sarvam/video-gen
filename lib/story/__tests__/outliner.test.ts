@@ -13,20 +13,38 @@ const mockGenerateContent = vi.fn().mockResolvedValue({
         index: 1,
         durationSeconds: 15,
         oneLineSummary: "wide opener",
+        beatType: "establishing",
         hasDialogue: false,
         role: "opener",
         shotType: "wide",
         bgmIntensity: "low",
+        sceneDescription:
+          "A test scene with warm lighting and detailed environment.",
+        cameraDirection:
+          "Medium shot, slow push-in, eye-level, 50mm lens.",
+        lightingNotes:
+          "Warm golden hour sidelight, soft fill from ambient sky.",
+        audioDirection:
+          "Ambient: gentle wind. BGM: soft piano at low intensity.",
       },
       {
         index: 2,
         durationSeconds: 15,
         oneLineSummary: "close-up reveal",
+        beatType: "dialogue",
         hasDialogue: true,
         dialogue: { text: "नमस्ते।", speaker: "shubh", languageCode: "hi-IN" },
         role: "continuation",
         shotType: "closeup",
         bgmIntensity: "low",
+        sceneDescription:
+          "A test scene with warm lighting and detailed environment.",
+        cameraDirection:
+          "Medium shot, slow push-in, eye-level, 50mm lens.",
+        lightingNotes:
+          "Warm golden hour sidelight, soft fill from ambient sky.",
+        audioDirection:
+          "Ambient: gentle wind. BGM: soft piano at low intensity.",
       },
     ],
   }),

@@ -65,10 +65,10 @@ export const parallelRunner: ChainRunner = {
       const genInput: GenerationInput = {
         model,
         prompt: fullPrompt,
-        resolution: "720p",
-        aspectRatio: "16:9",
+        resolution: outline.resolution ?? "720p",
+        aspectRatio: outline.aspectRatio ?? "16:9",
         duration: String(outlineBeat.durationSeconds) as GenerationInput["duration"],
-        generateAudio: true,
+        generateAudio: outline.generateAudio ?? true,
         seed: 20260427 * outlineBeat.index,
         imageUrls: imageUrlsBase.slice(0, 9),
         videoUrls: videoUrlsBase.slice(0, 3),

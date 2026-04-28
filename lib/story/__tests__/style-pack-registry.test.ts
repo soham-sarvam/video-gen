@@ -7,16 +7,11 @@ describe("style-pack-registry", () => {
     expect(STYLE_PACKS[0].id).toBe("auto");
   });
 
-  it("each pack has id, label, description, and skill path (except auto)", () => {
+  it("each pack has id, label, and description", () => {
     for (const pack of STYLE_PACKS) {
       expect(pack.id).toMatch(/^(auto|\d{2}-[a-z0-9-]+)$/);
       expect(pack.label.length).toBeGreaterThan(0);
       expect(pack.description.length).toBeGreaterThan(0);
-      if (pack.id === "auto") {
-        expect(pack.skillPath).toBeNull();
-      } else {
-        expect(pack.skillPath).toMatch(/^skills\/\d{2}-/);
-      }
     }
   });
 

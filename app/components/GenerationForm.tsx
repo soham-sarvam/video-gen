@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Button,
   ButtonGroup,
@@ -41,6 +41,7 @@ import type {
   UploadedAsset,
 } from "@/lib/types";
 import type { StoryOutline, StoryRun } from "@/lib/story/types";
+import type { StorySummary } from "@/app/api/story/list/route";
 import {
   validateAssetBundle,
   validatePromptReferences,
@@ -129,7 +130,12 @@ function buildReferenceHint(form: GenerationFormState): string {
   return `Reference your assets in the prompt: ${tokens.join(", ")}`;
 }
 
-export function GenerationForm() {
+interface GenerationFormProps {
+  preloadStory?: StorySummary | null;
+  onStoryLoaded?: () => void;
+}
+
+export function GenerationForm({ preloadStory, onStoryLoaded }: GenerationFormProps = {}) {
   const [form, setForm] = useState<GenerationFormState>(INITIAL_FORM);
   const [result, setResult] = useState<ResultState>(INITIAL_RESULT);
   const [optimizing, setOptimizing] = useState(false);
@@ -140,6 +146,28 @@ export function GenerationForm() {
   const [characterSheet, setCharacterSheet] = useState<CharacterSheetStatus>({
     state: "idle",
   });
+
+  useEffect(() => {
+    if (!preloadStory) return;
+    const loadStory = async () => {
+      try {
+        const run = await fetchJson<StoryRun>(
+          `/api/story/status?storyId=${encodeURIComponent(preloadStory.storyId)}&provider=${preloadStory.provider}`,
+        );
+        setStoryRun(run);
+        setForm((prev) => ({
+          ...prev,
+          storyLength: "half" as const,
+          generationMode: run.mode as GenerationFormState["generationMode"],
+          stylePack: run.stylePackId,
+        }));
+      } catch {
+        toast.error("Failed to load story.");
+      }
+      onStoryLoaded?.();
+    };
+    void loadStory();
+  }, [preloadStory, onStoryLoaded]);
 
   const setField = useCallback(
     <K extends keyof GenerationFormState>(
@@ -444,30 +472,64 @@ export function GenerationForm() {
         },
       );
       const provider = form.model.startsWith("kie") ? "kie" : "fal";
+      const statusUrl = `/api/story/status?storyId=${encodeURIComponent(storyOutline.storyId)}&provider=${provider}`;
+      const resultUrl = `/api/story/result?storyId=${encodeURIComponent(storyOutline.storyId)}&provider=${provider}`;
+
+      let pollErrors = 0;
+      const MAX_POLL_ERRORS = 5;
+      const MAX_POLL_ROUNDS = 400; // ~20 min ceiling at 3s interval
+      let round = 0;
+
       const poll = async () => {
+        round += 1;
+        if (round > MAX_POLL_ROUNDS) {
+          toast.error("Story generation timed out.");
+          setIsGeneratingStory(false);
+          return;
+        }
         try {
-          const run = await fetchJson<StoryRun>(
-            `/api/story/status?storyId=${encodeURIComponent(storyOutline.storyId)}&provider=${provider}`,
-          );
+          const run = await fetchJson<StoryRun>(statusUrl);
           setStoryRun(run);
-          const done = run.beats.every((b) => b.status === "completed");
-          if (done && run.stitchStatus !== "completed") {
-            const stitched = await fetchJson<StoryRun>(
-              `/api/story/result?storyId=${encodeURIComponent(storyOutline.storyId)}&provider=${provider}`,
-            );
-            setStoryRun(stitched);
-            toast.success("Story stitched.");
+          pollErrors = 0;
+
+          if (run.stitchStatus === "failed") {
+            toast.error(run.failure?.message ?? "Story generation failed.");
+            setIsGeneratingStory(false);
             return;
           }
-          if (!done) setTimeout(poll, 3000);
+
+          const done = run.beats.every((b) => b.status === "completed");
+          if (done && run.stitchStatus === "completed" && run.finalLocalUrl) {
+            toast.success("Story ready.");
+            setIsGeneratingStory(false);
+            return;
+          }
+          if (done && run.stitchStatus !== "completed") {
+            try {
+              const stitched = await fetchJson<StoryRun>(resultUrl);
+              setStoryRun(stitched);
+              toast.success("Story stitched.");
+              setIsGeneratingStory(false);
+              return;
+            } catch {
+              setTimeout(poll, 5000);
+              return;
+            }
+          }
+          setTimeout(poll, 3000);
         } catch (err) {
-          toast.error(err instanceof Error ? err.message : "Polling failed.");
+          pollErrors += 1;
+          if (pollErrors >= MAX_POLL_ERRORS) {
+            toast.error(err instanceof Error ? err.message : "Polling failed repeatedly.");
+            setIsGeneratingStory(false);
+            return;
+          }
+          setTimeout(poll, 5000);
         }
       };
       setTimeout(poll, 1500);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Submit failed.");
-    } finally {
       setIsGeneratingStory(false);
     }
   }, [form, storyOutline, characterSheet]);

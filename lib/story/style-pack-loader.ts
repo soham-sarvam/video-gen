@@ -1,16 +1,18 @@
 /**
- * Server-only loader for style-pack SKILL.md content. Reads from disk.
- * Lives in a separate module from `style-pack-registry.ts` so the registry
- * data + heuristic stays bundleable into client components without dragging
- * `node:fs/promises` into the client bundle.
+ * @deprecated Style pack prompt knowledge is now inline in prompt-library.ts.
+ * This file is kept for backward compatibility with tests but does nothing useful.
  */
-import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { STYLE_PACKS } from "./style-pack-registry";
+import { getStyleDirective } from "./prompt-library";
 
 export async function loadStylePackContent(id: string): Promise<string | null> {
-  const pack = STYLE_PACKS.find((p) => p.id === id);
-  if (!pack || !pack.skillPath) return null;
-  const absPath = path.join(process.cwd(), pack.skillPath);
-  return await readFile(absPath, "utf-8");
+  const directive = getStyleDirective(id);
+  if (!directive) return null;
+  return [
+    `# ${directive.label}`,
+    ``,
+    `**Visual style**: ${directive.visualStyle}`,
+    `**Camera**: ${directive.cameraPreferences}`,
+    `**Lighting**: ${directive.lightingPreferences}`,
+    `**Pacing**: ${directive.pacingNotes}`,
+  ].join("\n");
 }

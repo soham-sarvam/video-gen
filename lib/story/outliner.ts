@@ -38,6 +38,10 @@ const RESPONSE_SCHEMA = {
           index: { type: "number" },
           durationSeconds: { type: "number" },
           oneLineSummary: { type: "string" },
+          beatType: {
+            type: "string",
+            enum: ["establishing", "dialogue", "b-roll", "action", "transition", "montage", "reaction", "cutaway"],
+          },
           hasDialogue: { type: "boolean" },
           dialogue: {
             type: "object",
@@ -51,9 +55,17 @@ const RESPONSE_SCHEMA = {
           pinFrame: { type: "boolean" },
           shotType: { type: "string" },
           bgmIntensity: { type: "string" },
+          sceneDescription: { type: "string" },
+          cameraDirection: { type: "string" },
+          lightingNotes: { type: "string" },
+          audioDirection: { type: "string" },
           fullPrompt: { type: "string" },
         },
-        required: ["index", "durationSeconds", "oneLineSummary", "hasDialogue", "role", "shotType", "bgmIntensity"],
+        required: [
+          "index", "durationSeconds", "oneLineSummary", "beatType",
+          "hasDialogue", "role", "shotType", "bgmIntensity",
+          "sceneDescription", "cameraDirection", "lightingNotes", "audioDirection",
+        ],
       },
     },
   },
@@ -130,6 +142,9 @@ export async function outlineStory(
     parsed.storyId = parsed.storyId || nanoid(12);
     parsed.stylePackId = stylePackId;
     parsed.totalDurationSeconds = total;
+    parsed.resolution = req.resolution;
+    parsed.aspectRatio = req.aspectRatio;
+    parsed.generateAudio = true;
     return parsed;
   };
 
