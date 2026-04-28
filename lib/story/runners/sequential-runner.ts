@@ -96,9 +96,13 @@ export const sequentialRunner: ChainRunner = {
         generateAudio: true,
         seed: 20260427 * outlineBeat.index,
         imageUrls: imageUrlsBase.slice(0, 9),
+        // KIE caps combined ref_video_urls duration at 15s. The 10s trail
+        // alone leaves only 5s of headroom — adding the user's 13s clip blows
+        // the cap. On continuation beats the trail carries the consistency we
+        // need; the user's reference video already shaped the opener.
         videoUrls:
           tier !== "fresh" && previousBeat?.trailVideoUrl
-            ? [previousBeat.trailVideoUrl, ...videoUrlsBase].slice(0, 3)
+            ? [previousBeat.trailVideoUrl]
             : videoUrlsBase.slice(0, 3),
         audioUrls: audioUrlsBase.slice(0, 3),
         firstFrameUrl:
