@@ -49,6 +49,12 @@ export interface GenerationInput {
   imageUrls: string[];
   videoUrls: string[];
   audioUrls: string[];
+  /**
+   * Optional first-frame pin (image-to-video / multimodal mode).
+   * KIE accepts this alongside reference_*_urls in one request.
+   * FAL splits — providers/fal.ts routes to fast/image-to-video when set.
+   */
+  firstFrameUrl?: string;
 }
 
 export interface VideoProvider {

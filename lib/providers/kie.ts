@@ -247,6 +247,7 @@ async function submitTask(input: GenerationInput): Promise<SubmitOutput> {
       nsfw_checker: KIE_NSFW_CHECKER_DEFAULT,
       ...(input.seed !== undefined ? { seed: input.seed } : {}),
       ...(input.webSearch !== undefined ? { web_search: input.webSearch } : {}),
+      ...(input.firstFrameUrl ? { first_frame_url: input.firstFrameUrl } : {}),
       ...(input.imageUrls.length
         ? { reference_image_urls: input.imageUrls }
         : {}),

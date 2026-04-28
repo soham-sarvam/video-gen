@@ -137,6 +137,34 @@ async function uploadFromBuffer(
 // ---------------------------------------------------------------------------
 async function submit(input: GenerationInput): Promise<SubmitOutput> {
   ensureConfigured();
+
+  // FAL splits endpoints: reference-to-video accepts ref arrays but not
+  // first_frame_url; image-to-video does the inverse. When the caller
+  // provides a first frame, route to image-to-video. Note: this loses
+  // the ref arrays for that request — documented "degraded mode" tradeoff
+  // per the Story Mode spec.
+  if (input.firstFrameUrl) {
+    const endpoint =
+      input.model.tier === "fast"
+        ? "bytedance/seedance-2.0/fast/image-to-video"
+        : "bytedance/seedance-2.0/image-to-video";
+    const i2vInput: Record<string, unknown> = {
+      prompt: input.prompt,
+      image_url: input.firstFrameUrl,
+      resolution: input.resolution,
+      aspect_ratio: input.aspectRatio,
+      duration: input.duration,
+      generate_audio: input.generateAudio,
+    };
+    if (input.seed !== undefined) i2vInput.seed = input.seed;
+    try {
+      const result = await fal.queue.submit(endpoint, { input: i2vInput });
+      return { taskId: result.request_id };
+    } catch (err) {
+      throw new Error(extractFalErrorDetail(err));
+    }
+  }
+
   try {
     const result = await fal.queue.submit(input.model.slug, {
       input: buildInput(input),
