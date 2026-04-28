@@ -311,3 +311,29 @@ export const KIE_GET_TASK_DETAIL_PATH = "/api/v1/jobs/recordInfo";
 export const KIE_BASE64_MAX_BYTES = 8 * MB;
 /** Always run KIE NSFW filter — non-negotiable per project policy. */
 export const KIE_NSFW_CHECKER_DEFAULT = true;
+
+// ---------------------------------------------------------------------------
+// Story Mode
+// ---------------------------------------------------------------------------
+export const STORY_LENGTHS = ["single", "half", "minute"] as const;
+export type StoryLength = (typeof STORY_LENGTHS)[number];
+export const DEFAULT_STORY_LENGTH: StoryLength = "single";
+
+export const STORY_LENGTH_TO_SECONDS: Record<StoryLength, number> = {
+  single: 15,
+  half: 30,
+  minute: 60,
+};
+
+export const MAX_STORY_DURATION = 60;
+
+export const GENERATION_MODES = ["quality", "fast"] as const;
+export type GenerationMode = (typeof GENERATION_MODES)[number];
+export const DEFAULT_GENERATION_MODE: GenerationMode = "quality";
+
+export function isStoryMode(length: StoryLength): boolean {
+  return length !== "single";
+}
+
+/** Per-beat default duration when planner doesn't specify (Quality mode only). */
+export const DEFAULT_BEAT_DURATION_S = 8;
