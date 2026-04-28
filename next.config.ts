@@ -9,7 +9,7 @@ const nextConfig: NextConfig = {
   },
   // Keep ffprobe-static external so its .exe binary path resolves correctly
   // at runtime instead of pointing into the bundled .next output.
-  serverExternalPackages: ["ffprobe-static"],
+  serverExternalPackages: ["ffprobe-static", "ffmpeg-static"],
 };
 
 export default nextConfig;
