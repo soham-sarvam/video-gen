@@ -9,7 +9,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { IndicLanguageCode, GenerationMode } from "@/lib/constants";
-import { loadStylePackContent } from "./style-pack-registry";
+import { loadStylePackContent } from "./style-pack-loader";
 import type { ContinuityTier } from "./types";
 
 const FOUNDATION_PATHS = [

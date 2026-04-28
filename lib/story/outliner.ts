@@ -99,6 +99,10 @@ export async function outlineStory(
     `Return a StoryOutline JSON.`,
   ].join("\n");
 
+  // Fast mode requires a fullPrompt per beat — that doubles the response size.
+  // Bump the output token budget so structured-JSON responses don't truncate.
+  const maxOutputTokens = req.mode === "fast" ? 8192 : 4096;
+
   const callOnce = async (extra: string): Promise<StoryOutline> => {
     const res = await client.models.generateContent({
       model: GEMINI_MODEL,
@@ -106,7 +110,7 @@ export async function outlineStory(
       config: {
         systemInstruction,
         temperature: 0.5,
-        maxOutputTokens: 4096,
+        maxOutputTokens,
         responseMimeType: "application/json",
         responseSchema: RESPONSE_SCHEMA as never,
         thinkingConfig: { thinkingBudget: 4096 },
@@ -114,18 +118,59 @@ export async function outlineStory(
     });
     const text = res.text?.trim() ?? "";
     if (!text) throw new Error("Gemini returned empty outline.");
-    const parsed = JSON.parse(text) as StoryOutline;
+    let parsed: StoryOutline;
+    try {
+      parsed = JSON.parse(text) as StoryOutline;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Outline JSON parse failed: ${msg}. Likely truncation — try a shorter prompt or switch to Quality mode.`,
+      );
+    }
     parsed.storyId = parsed.storyId || nanoid(12);
     parsed.stylePackId = stylePackId;
     parsed.totalDurationSeconds = total;
     return parsed;
   };
 
-  let outline = await callOnce("");
-  let warnings = validateOutline(outline, req.model);
+  // Wrap both call paths so JSON.parse errors trigger a retry the same way
+  // validator errors do — Fast mode's larger payload is the common offender.
+  const safeCall = async (extra: string): Promise<{ outline: StoryOutline | null; parseError: string | null }> => {
+    try {
+      return { outline: await callOnce(extra), parseError: null };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("Outline JSON parse failed")) {
+        return { outline: null, parseError: msg };
+      }
+      throw err;
+    }
+  };
+
+  let outline: StoryOutline;
+  let warnings: string[];
+  const first = await safeCall("");
+  if (first.outline) {
+    outline = first.outline;
+    warnings = validateOutline(outline, req.model);
+  } else {
+    // Parse failed — retry once with a hint to keep dialogue strings short.
+    const retry = await safeCall(
+      "Your previous response was not valid JSON (likely truncation). " +
+        "Reduce per-beat fullPrompt verbosity, escape internal quotes, and ensure the response fits within the token budget.",
+    );
+    if (!retry.outline) {
+      throw new Error(retry.parseError ?? first.parseError ?? "Outline parse failed twice.");
+    }
+    outline = retry.outline;
+    warnings = validateOutline(outline, req.model);
+  }
+
   if (warnings.length > 0) {
     try {
-      const retried = await callOnce(`Validator errors:\n${warnings.map((w) => `- ${w}`).join("\n")}\n\nRewrite the outline to fix every error above.`);
+      const retried = await callOnce(
+        `Validator errors:\n${warnings.map((w) => `- ${w}`).join("\n")}\n\nRewrite the outline to fix every error above.`,
+      );
       const retriedWarnings = validateOutline(retried, req.model);
       if (retriedWarnings.length < warnings.length) {
         outline = retried;

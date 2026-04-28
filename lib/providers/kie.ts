@@ -82,6 +82,11 @@ const KIE_CODE_MEANING: Record<number, string> = {
 
 function describeKieCode(code: number, fallback: string): string {
   const known = KIE_CODE_MEANING[code];
+  // Always include the actual server message — `known` alone is too generic
+  // for debugging (e.g. 422 → "Validation error" without saying which field).
+  if (known && fallback && !fallback.includes(known)) {
+    return `${code} ${known} — ${fallback}`;
+  }
   return known ? `${code} ${known}` : `${code} ${fallback}`;
 }
 

@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  STYLE_PACKS,
-  pickAutoStylePack,
-  loadStylePackContent,
-} from "../style-pack-registry";
+import { STYLE_PACKS, pickAutoStylePack } from "../style-pack-registry";
 
 describe("style-pack-registry", () => {
   it("ships 16 entries (auto + 15 packs)", () => {
@@ -36,7 +32,5 @@ describe("style-pack-registry", () => {
     expect(pickAutoStylePack("nothing matches", {})).toBe("01-cinematic");
   });
 
-  it("loadStylePackContent returns null for auto", async () => {
-    expect(await loadStylePackContent("auto")).toBeNull();
-  });
+
 });

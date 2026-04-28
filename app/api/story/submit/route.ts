@@ -47,16 +47,34 @@ export async function POST(request: NextRequest): Promise<Response> {
     return jsonError(getErrorMessage(err), 400);
   }
 
-  // Look up or generate the canonical voice WAV/MP3; pick the FAL or KIE
-  // URL depending on the active provider.
+  // Voice timbre source policy:
+  //   1. If the user uploaded a reference audio, use its FIRST entry as @audio1
+  //      (the user's voice — exactly what Seedance should imitate for lip-sync).
+  //   2. Only fall back to a Bulbul-generated cached sample when the user
+  //      uploaded no audio at all.
+  //
+  // When (1) wins, that audio is REMOVED from `references.audios` before being
+  //   passed to the runner so it doesn't get duplicated as @audio2 on top of
+  //   @audio1 — Seedance has a 3-audio cap and we don't want to waste a slot.
   let voiceUrl: string;
+  let runnerAudios = references.audios;
   try {
-    const voice = await getCachedVoice({
-      languageCode: outline.language,
-      speaker: outline.voiceTimbreSpeaker,
-    });
-    voiceUrl = (model.provider === "kie" ? voice.cdnUrls.kie : voice.cdnUrls.fal) ?? "";
-    if (!voiceUrl) throw new Error("Voice CDN upload failed for active provider.");
+    const userAudio = references.audios?.[0];
+    const userAudioCdn = userAudio?.cdnUrls?.[model.provider];
+    if (userAudioCdn) {
+      voiceUrl = userAudioCdn;
+      runnerAudios = references.audios.slice(1);
+    } else {
+      const voice = await getCachedVoice({
+        languageCode: outline.language,
+        speaker: outline.voiceTimbreSpeaker,
+      });
+      voiceUrl =
+        (model.provider === "kie" ? voice.cdnUrls.kie : voice.cdnUrls.fal) ?? "";
+      if (!voiceUrl) {
+        throw new Error("Voice CDN upload failed for active provider.");
+      }
+    }
   } catch (err) {
     return jsonError(`Voice prep failed: ${getErrorMessage(err)}`, 502);
   }
@@ -81,13 +99,20 @@ export async function POST(request: NextRequest): Promise<Response> {
     .run({
       outline,
       model,
-      references,
+      references: { ...references, audios: runnerAudios },
       voiceTimbreCdnUrl: voiceUrl,
     })
     .catch(async (err) => {
+      // Preserve whatever the runner had already written to state.json — it
+      // includes the failing beat's taskId, fullPrompt, and prior completed
+      // beats. Falling back to raw outline beats erases that diagnostic info.
+      const { readState } = await import("@/lib/story/archive");
+      const current = await readState<typeof outline & { beats: typeof outline.beats }>(
+        model.provider,
+        outline.storyId,
+      ).catch(() => null);
       const failureState = {
-        ...outline,
-        beats: outline.beats,
+        ...(current ?? { ...outline, beats: outline.beats }),
         stitchStatus: "failed" as const,
         failure: { stage: "runner", message: getErrorMessage(err) },
       };

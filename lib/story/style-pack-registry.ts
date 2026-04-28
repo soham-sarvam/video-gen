@@ -1,11 +1,9 @@
 /**
  * 16 theme entries: `auto` + the 15 style packs under `skills/01-…` … `skills/15-…`.
  *
- * Packs are loaded from disk at request time so editing a pack's SKILL.md
- * takes effect on the next planning call without a redeploy.
+ * Pure data + heuristic — no fs imports. Safe to import in client components.
+ * For disk loading, use `style-pack-loader.ts` (server-only).
  */
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import type { AspectRatio } from "@/lib/constants";
 import type { BgmIntensity } from "./types";
 
@@ -153,9 +151,3 @@ export function pickAutoStylePack(prompt: string, _hints: AssetHints): string {
   return "01-cinematic";
 }
 
-export async function loadStylePackContent(id: string): Promise<string | null> {
-  const pack = STYLE_PACKS.find((p) => p.id === id);
-  if (!pack || !pack.skillPath) return null;
-  const absPath = path.join(process.cwd(), pack.skillPath);
-  return await readFile(absPath, "utf-8");
-}
