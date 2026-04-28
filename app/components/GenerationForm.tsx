@@ -23,6 +23,9 @@ import {
   VIDEO_MODELS,
   getVideoModelById,
   isResolutionAllowed,
+  isStoryMode,
+  DEFAULT_GENERATION_MODE,
+  DEFAULT_STORY_LENGTH,
   type AspectRatio,
   type Duration,
   type IndicLanguageCode,
@@ -37,6 +40,7 @@ import type {
   SubmitGenerationResponse,
   UploadedAsset,
 } from "@/lib/types";
+import type { StoryOutline, StoryRun } from "@/lib/story/types";
 import {
   validateAssetBundle,
   validatePromptReferences,
@@ -51,6 +55,11 @@ import {
 } from "@/app/constants";
 import { AssetUploadField } from "./AssetUploadField";
 import { VideoResultPanel } from "./VideoResultPanel";
+import { StoryLengthField } from "./story/StoryLengthField";
+import { ModeField } from "./story/ModeField";
+import { ThemeField } from "./story/ThemeField";
+import { OutlineReviewer } from "./story/OutlineReviewer";
+import { StoryTimeline } from "./story/StoryTimeline";
 
 const GENERATE_AUDIO_OPTIONS = [
   { value: "no", label: "No" },
@@ -70,6 +79,9 @@ const INITIAL_FORM: GenerationFormState = {
   referenceImages: [],
   referenceVideos: [],
   referenceAudios: [],
+  storyLength: DEFAULT_STORY_LENGTH,
+  generationMode: DEFAULT_GENERATION_MODE,
+  stylePack: "auto",
 };
 
 type ResultStatus = "idle" | "generating" | "ready" | "error";
@@ -121,6 +133,10 @@ export function GenerationForm() {
   const [form, setForm] = useState<GenerationFormState>(INITIAL_FORM);
   const [result, setResult] = useState<ResultState>(INITIAL_RESULT);
   const [optimizing, setOptimizing] = useState(false);
+  const [storyOutline, setStoryOutline] = useState<StoryOutline | null>(null);
+  const [storyRun, setStoryRun] = useState<StoryRun | null>(null);
+  const [isPlanningStory, setIsPlanningStory] = useState(false);
+  const [isGeneratingStory, setIsGeneratingStory] = useState(false);
 
   const setField = useCallback(
     <K extends keyof GenerationFormState>(
@@ -324,6 +340,89 @@ export function GenerationForm() {
     }
   }, [form]);
 
+  const handlePlanStory = useCallback(async () => {
+    setIsPlanningStory(true);
+    try {
+      const data = await fetchJson<{ outline: StoryOutline; warnings: string[] }>(
+        "/api/story/outline",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            prompt: form.prompt,
+            language: form.language,
+            storyLength: form.storyLength,
+            mode: form.generationMode,
+            stylePack: form.stylePack,
+            model: form.model,
+            resolution: form.resolution,
+            aspectRatio: form.aspectRatio,
+            references: {
+              images: form.referenceImages,
+              videos: form.referenceVideos,
+              audios: form.referenceAudios,
+            },
+          }),
+        },
+      );
+      setStoryOutline(data.outline);
+      if (data.warnings.length) {
+        toast.warning({ title: "Outline warnings", description: data.warnings.join(" · ") });
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Plan failed.");
+    } finally {
+      setIsPlanningStory(false);
+    }
+  }, [form]);
+
+  const handleSubmitStory = useCallback(async () => {
+    if (!storyOutline) return;
+    setIsGeneratingStory(true);
+    try {
+      await fetchJson<{ storyId: string; model: string }>(
+        "/api/story/submit",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            outline: storyOutline,
+            model: form.model,
+            references: {
+              images: form.referenceImages,
+              videos: form.referenceVideos,
+              audios: form.referenceAudios,
+            },
+          }),
+        },
+      );
+      const provider = form.model.startsWith("kie") ? "kie" : "fal";
+      const poll = async () => {
+        try {
+          const run = await fetchJson<StoryRun>(
+            `/api/story/status?storyId=${encodeURIComponent(storyOutline.storyId)}&provider=${provider}`,
+          );
+          setStoryRun(run);
+          const done = run.beats.every((b) => b.status === "completed");
+          if (done && run.stitchStatus !== "completed") {
+            const stitched = await fetchJson<StoryRun>(
+              `/api/story/result?storyId=${encodeURIComponent(storyOutline.storyId)}&provider=${provider}`,
+            );
+            setStoryRun(stitched);
+            toast.success("Story stitched.");
+            return;
+          }
+          if (!done) setTimeout(poll, 3000);
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : "Polling failed.");
+        }
+      };
+      setTimeout(poll, 1500);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Submit failed.");
+    } finally {
+      setIsGeneratingStory(false);
+    }
+  }, [form, storyOutline]);
+
   const handleReset = useCallback(() => setResult(INITIAL_RESULT), []);
 
   const promptCount = `${form.prompt.length} / ${PROMPT_MAX_CHARS}`;
@@ -369,12 +468,14 @@ export function GenerationForm() {
             value={form.aspectRatio}
             onValueChange={(v) => setField("aspectRatio", v as AspectRatio)}
           />
-          <Select
-            label="Duration"
-            options={DURATION_OPTIONS}
-            value={form.duration}
-            onValueChange={(v) => setField("duration", v as Duration)}
-          />
+          {!isStoryMode(form.storyLength) && (
+            <Select
+              label="Duration"
+              options={DURATION_OPTIONS}
+              value={form.duration}
+              onValueChange={(v) => setField("duration", v as Duration)}
+            />
+          )}
           <Input
             label="Seed (optional)"
             placeholder="e.g. 20260424"
@@ -410,6 +511,25 @@ export function GenerationForm() {
             />
           </div>
         )}
+      </Section>
+
+      <Section title="Story" description="Pick story length, mode, and theme.">
+        <div className="grid grid-cols-1 gap-tatva-12 md:grid-cols-3">
+          <StoryLengthField
+            value={form.storyLength}
+            onChange={(v) => setField("storyLength", v)}
+          />
+          <ThemeField
+            value={form.stylePack}
+            onChange={(v) => setField("stylePack", v)}
+          />
+          {isStoryMode(form.storyLength) && (
+            <ModeField
+              value={form.generationMode}
+              onChange={(v) => setField("generationMode", v)}
+            />
+          )}
+        </div>
       </Section>
 
       <Section
@@ -464,34 +584,71 @@ export function GenerationForm() {
         </div>
       </Section>
 
-      <div className="flex justify-end gap-tatva-8 border-t border-tatva-border-secondary pt-tatva-8">
-        <Button
-          variant="primary"
-          size="lg"
-          icon="play"
-          width="full"
-          isLoading={result.status === "generating"}
-          disabled={result.status === "generating"}
-          onClick={handleGenerate}
-        >
-          {result.status === "generating" ? "Generating…" : "Generate video"}
-        </Button>
-      </div>
-
-      <Section title="Result">
-        <div className="rounded-tatva-md border border-tatva-border-secondary bg-tatva-surface-primary">
-          <VideoResultPanel
-            status={result.status}
-            videoUrl={result.videoUrl}
-            seed={result.seed}
-            errorMessage={result.errorMessage}
-            queueStatus={result.queueStatus}
-            queuePosition={result.queuePosition}
-            logs={result.logs}
-            onReset={handleReset}
+      {isStoryMode(form.storyLength) ? (
+        <>
+          {!storyOutline && (
+            <div className="flex justify-end">
+              <Button
+                variant="primary"
+                size="lg"
+                onClick={handlePlanStory}
+                isLoading={isPlanningStory}
+                disabled={isPlanningStory}
+              >
+                Plan story
+              </Button>
+            </div>
+          )}
+          {storyOutline && (
+            <OutlineReviewer
+              outline={storyOutline}
+              onOutlineChange={setStoryOutline}
+              onRegenerate={handlePlanStory}
+              onApprove={handleSubmitStory}
+              isGenerating={isGeneratingStory}
+            />
+          )}
+          <StoryTimeline
+            run={storyRun}
+            onRerollBeat={(_index: number) => toast.info("Re-roll: implement in Phase 2.")}
+            onReset={() => {
+              setStoryOutline(null);
+              setStoryRun(null);
+            }}
           />
-        </div>
-      </Section>
+        </>
+      ) : (
+        <>
+          <div className="flex justify-end gap-tatva-8 border-t border-tatva-border-secondary pt-tatva-8">
+            <Button
+              variant="primary"
+              size="lg"
+              icon="play"
+              width="full"
+              isLoading={result.status === "generating"}
+              disabled={result.status === "generating"}
+              onClick={handleGenerate}
+            >
+              {result.status === "generating" ? "Generating…" : "Generate video"}
+            </Button>
+          </div>
+
+          <Section title="Result">
+            <div className="rounded-tatva-md border border-tatva-border-secondary bg-tatva-surface-primary">
+              <VideoResultPanel
+                status={result.status}
+                videoUrl={result.videoUrl}
+                seed={result.seed}
+                errorMessage={result.errorMessage}
+                queueStatus={result.queueStatus}
+                queuePosition={result.queuePosition}
+                logs={result.logs}
+                onReset={handleReset}
+              />
+            </div>
+          </Section>
+        </>
+      )}
     </div>
   );
 }

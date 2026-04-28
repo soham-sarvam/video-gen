@@ -7,8 +7,10 @@ import type {
   AspectRatio,
   AssetKind,
   Duration,
+  GenerationMode,
   IndicLanguageCode,
   Resolution,
+  StoryLength,
   VideoModelId,
 } from "./constants";
 import type { TaskStatus } from "./providers/types";
@@ -74,6 +76,9 @@ export interface GenerationFormState {
   referenceImages: UploadedAsset[];
   referenceVideos: UploadedAsset[];
   referenceAudios: UploadedAsset[];
+  storyLength: StoryLength;
+  generationMode: GenerationMode;
+  stylePack: string;
 }
 
 // ---------------------------------------------------------------------------
