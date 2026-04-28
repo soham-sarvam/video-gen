@@ -11,8 +11,15 @@ import { z } from "zod";
 import { getVideoModelById } from "@/lib/constants";
 import { pickRunner } from "@/lib/story/runners";
 import { writeState } from "@/lib/story/archive";
+import { prepareCharacterSheet } from "@/lib/story/character-sheet";
 import { getCachedVoice } from "@/lib/voice/voice-cache";
-import { getErrorMessage, jsonError, jsonOk } from "@/lib/server-utils";
+import {
+  getErrorMessage,
+  getRequestOrigin,
+  jsonError,
+  jsonOk,
+} from "@/lib/server-utils";
+import type { UploadedAsset } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -25,6 +32,8 @@ const SubmitSchema = z.object({
     videos: z.array(z.any()).default([]),
     audios: z.array(z.any()).default([]),
   }),
+  /** Pre-generated character sheet from /api/story/character-sheet, if any. */
+  characterSheetAsset: z.any().optional(),
 });
 
 export async function POST(request: NextRequest): Promise<Response> {
@@ -38,7 +47,8 @@ export async function POST(request: NextRequest): Promise<Response> {
   if (!parsed.success) {
     return jsonError(parsed.error.issues.map((i) => i.message).join("; "), 400);
   }
-  const { outline, model: modelId, references } = parsed.data;
+  const { outline, model: modelId, references, characterSheetAsset } = parsed.data;
+  const origin = getRequestOrigin(request);
 
   let model;
   try {
@@ -94,15 +104,41 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   // Fire-and-forget the runner. We don't await it — the route returns
   // immediately after kicking it off. state.json is the contract for /status.
+  // Character sheet prep also runs in the fire-and-forget block so it
+  // doesn't push us past the 30s submit budget.
   const runner = pickRunner(outline.mode);
-  void runner
-    .run({
-      outline,
-      model,
-      references: { ...references, audios: runnerAudios },
-      voiceTimbreCdnUrl: voiceUrl,
-    })
-    .catch(async (err) => {
+  void (async () => {
+    let runnerImages: UploadedAsset[] = references.images;
+    if (characterSheetAsset && characterSheetAsset.cdnUrls) {
+      runnerImages = [characterSheetAsset as UploadedAsset, ...references.images];
+    } else if (references.images.length === 0) {
+      try {
+        const prep = await prepareCharacterSheet({
+          outline,
+          references: { ...references, audios: runnerAudios },
+          origin,
+        });
+        if (prep.asset) runnerImages = [prep.asset];
+      } catch (err) {
+        // Non-fatal — proceed without a sheet rather than failing the run.
+        console.warn(
+          `[story/submit] character sheet prep failed: ${getErrorMessage(err)}`,
+        );
+      }
+    }
+
+    await runner
+      .run({
+        outline,
+        model,
+        references: {
+          ...references,
+          images: runnerImages,
+          audios: runnerAudios,
+        },
+        voiceTimbreCdnUrl: voiceUrl,
+      })
+      .catch(async (err) => {
       // Preserve whatever the runner had already written to state.json — it
       // includes the failing beat's taskId, fullPrompt, and prior completed
       // beats. Falling back to raw outline beats erases that diagnostic info.
@@ -120,6 +156,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         () => undefined,
       );
     });
+  })();
 
   return jsonOk({ storyId: outline.storyId, model: modelId });
 }

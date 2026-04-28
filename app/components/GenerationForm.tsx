@@ -58,7 +58,7 @@ import { VideoResultPanel } from "./VideoResultPanel";
 import { StoryLengthField } from "./story/StoryLengthField";
 import { ModeField } from "./story/ModeField";
 import { ThemeField } from "./story/ThemeField";
-import { OutlineReviewer } from "./story/OutlineReviewer";
+import { OutlineReviewer, type CharacterSheetStatus } from "./story/OutlineReviewer";
 import { StoryTimeline } from "./story/StoryTimeline";
 
 const GENERATE_AUDIO_OPTIONS = [
@@ -137,6 +137,9 @@ export function GenerationForm() {
   const [storyRun, setStoryRun] = useState<StoryRun | null>(null);
   const [isPlanningStory, setIsPlanningStory] = useState(false);
   const [isGeneratingStory, setIsGeneratingStory] = useState(false);
+  const [characterSheet, setCharacterSheet] = useState<CharacterSheetStatus>({
+    state: "idle",
+  });
 
   const setField = useCallback(
     <K extends keyof GenerationFormState>(
@@ -340,8 +343,41 @@ export function GenerationForm() {
     }
   }, [form]);
 
+  const fetchCharacterSheet = useCallback(
+    async (outline: StoryOutline) => {
+      setCharacterSheet({ state: "loading" });
+      try {
+        const data = await fetchJson<{
+          asset: UploadedAsset | null;
+          source: "user-images" | "video-first-frame" | "text-imagined";
+        }>("/api/story/character-sheet", {
+          method: "POST",
+          body: JSON.stringify({
+            outline,
+            references: {
+              images: form.referenceImages,
+              videos: form.referenceVideos,
+              audios: form.referenceAudios,
+            },
+          }),
+        });
+        setCharacterSheet({
+          state: "ready",
+          source: data.source,
+          asset: data.asset,
+        });
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "Character sheet generation failed.";
+        setCharacterSheet({ state: "error", message });
+      }
+    },
+    [form.referenceImages, form.referenceVideos, form.referenceAudios],
+  );
+
   const handlePlanStory = useCallback(async () => {
     setIsPlanningStory(true);
+    setCharacterSheet({ state: "idle" });
     try {
       const data = await fetchJson<{ outline: StoryOutline; warnings: string[] }>(
         "/api/story/outline",
@@ -368,17 +404,29 @@ export function GenerationForm() {
       if (data.warnings.length) {
         toast.warning({ title: "Outline warnings", description: data.warnings.join(" · ") });
       }
+      // Multi-clip runs only — kick off the sheet in parallel so the user
+      // can preview the canonical character before approving.
+      if (isStoryMode(form.storyLength)) {
+        void fetchCharacterSheet(data.outline);
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Plan failed.");
     } finally {
       setIsPlanningStory(false);
     }
-  }, [form]);
+  }, [form, fetchCharacterSheet]);
+
+  const handleRegenerateCharacterSheet = useCallback(() => {
+    if (!storyOutline) return;
+    void fetchCharacterSheet(storyOutline);
+  }, [fetchCharacterSheet, storyOutline]);
 
   const handleSubmitStory = useCallback(async () => {
     if (!storyOutline) return;
     setIsGeneratingStory(true);
     try {
+      const characterSheetAsset =
+        characterSheet.state === "ready" ? characterSheet.asset : null;
       await fetchJson<{ storyId: string; model: string }>(
         "/api/story/submit",
         {
@@ -391,6 +439,7 @@ export function GenerationForm() {
               videos: form.referenceVideos,
               audios: form.referenceAudios,
             },
+            characterSheetAsset,
           }),
         },
       );
@@ -421,7 +470,7 @@ export function GenerationForm() {
     } finally {
       setIsGeneratingStory(false);
     }
-  }, [form, storyOutline]);
+  }, [form, storyOutline, characterSheet]);
 
   const handleReset = useCallback(() => setResult(INITIAL_RESULT), []);
 
@@ -606,6 +655,8 @@ export function GenerationForm() {
               onRegenerate={handlePlanStory}
               onApprove={handleSubmitStory}
               isGenerating={isGeneratingStory}
+              characterSheet={characterSheet}
+              onRegenerateCharacterSheet={handleRegenerateCharacterSheet}
             />
           )}
           <StoryTimeline
@@ -614,6 +665,7 @@ export function GenerationForm() {
             onReset={() => {
               setStoryOutline(null);
               setStoryRun(null);
+              setCharacterSheet({ state: "idle" });
             }}
           />
         </>

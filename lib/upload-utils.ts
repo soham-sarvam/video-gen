@@ -182,3 +182,79 @@ export async function saveAsset({
     },
   };
 }
+
+export interface SaveAssetFromBufferParams {
+  buffer: Buffer;
+  /** Original filename used to derive a safe disk name + extension. */
+  originalName: string;
+  /** MIME type — drives extension selection + provider upload metadata. */
+  mimeType: string;
+  /** Asset role; auto-validated against ASSET_LIMITS for the kind. */
+  kind: AssetKind;
+  /** Origin from the incoming request, used to build the local-preview URL. */
+  origin: string;
+}
+
+/**
+ * Buffer-based variant of saveAsset for server-generated assets (e.g. the
+ * Nano Banana Pro character sheet). Skips MIME/size validation — caller
+ * is responsible for those — and skips the duration probe (image only).
+ */
+export async function saveAssetFromBuffer({
+  buffer,
+  originalName,
+  mimeType,
+  kind,
+  origin,
+}: SaveAssetFromBufferParams): Promise<SaveAssetResult> {
+  const uploadDir = getUploadDir();
+  await mkdir(uploadDir, { recursive: true });
+
+  const id = nanoid(12);
+  const ext = pickExtension(kind, mimeType);
+  const filename = `${kind}-${safeStem(originalName)}-${id}${ext}`;
+  const absolutePath = path.join(uploadDir, filename);
+  await writeFile(absolutePath, buffer);
+
+  const [falResult, kieResult] = await Promise.all([
+    tryProviderUpload("fal", () =>
+      falProvider.uploadFromBuffer(buffer, originalName, mimeType),
+    ),
+    tryProviderUpload("kie", () =>
+      kieProvider.uploadFromBuffer(buffer, originalName, mimeType),
+    ),
+  ]);
+
+  if (!falResult.url && !kieResult.url) {
+    await unlink(absolutePath).catch(() => undefined);
+    return {
+      ok: false,
+      error: {
+        code: "no_provider_url",
+        message: `Both CDN uploads failed. FAL: ${falResult.error ?? "?"}; KIE: ${kieResult.error ?? "?"}.`,
+      },
+    };
+  }
+
+  const cdnUrls: UploadedAsset["cdnUrls"] = {};
+  if (falResult.url) cdnUrls.fal = falResult.url;
+  if (kieResult.url) cdnUrls.kie = kieResult.url;
+  const absoluteUrl = falResult.url ?? kieResult.url ?? "";
+
+  const publicUrl = `${UPLOAD_PUBLIC_PATH}/${filename}`;
+  return {
+    ok: true,
+    asset: {
+      id,
+      kind,
+      originalName,
+      mimeType,
+      sizeBytes: buffer.byteLength,
+      publicUrl,
+      absoluteUrl,
+      cdnUrls,
+      localPreviewUrl: buildAbsoluteUrl(origin, publicUrl),
+      durationSeconds: null,
+    },
+  };
+}
