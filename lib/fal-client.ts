@@ -19,12 +19,16 @@
  * - Hard limits already enforced upstream by validation.ts
  */
 import { fal } from "@fal-ai/client";
-import type { FalModelId } from "./constants";
+import type { FalEditModelId, FalModelId } from "./constants";
 import type {
+  SeedanceEditRequest,
   SeedanceQueueStatus,
   SeedanceRequest,
   SeedanceVideoOutput,
 } from "./types";
+
+/** Union of every FAL model id we submit to (generation + edit). */
+type AnyFalModelId = FalModelId | FalEditModelId;
 
 let configured = false;
 
@@ -136,9 +140,13 @@ function isRawQueueStatus(value: unknown): value is RawQueueStatus {
 /**
  * Get the current status of a queued Seedance job.
  * Use this to drive client-side polling.
+ *
+ * Accepts both generation (`reference-to-video`) and edit
+ * (`image-to-video`) model ids — the FAL queue API is uniform across
+ * model families, only the model slug changes.
  */
 export async function getSeedanceJobStatus(
-  model: FalModelId,
+  model: AnyFalModelId,
   requestId: string,
 ): Promise<SeedanceQueueStatus> {
   ensureConfigured();
@@ -174,10 +182,11 @@ export async function getSeedanceJobStatus(
 /**
  * Fetch the final result of a completed Seedance job.
  * Caller must verify status === "COMPLETED" before invoking — calling
- * this on an in-progress job throws.
+ * this on an in-progress job throws. Accepts both generation and edit
+ * model ids for the same reason as `getSeedanceJobStatus`.
  */
 export async function getSeedanceJobResult(
-  model: FalModelId,
+  model: AnyFalModelId,
   requestId: string,
 ): Promise<SeedanceVideoOutput> {
   ensureConfigured();
@@ -195,6 +204,76 @@ export async function getSeedanceJobResult(
       videoUrl,
       seed: typeof data.seed === "number" ? data.seed : null,
     };
+  } catch (err: unknown) {
+    throw new Error(extractFalErrorDetail(err));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Edit submission — Seedance image-to-video with first/last frame anchors
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds the input payload for `bytedance/seedance-2.0/[fast/]image-to-video`.
+ *
+ * Anchoring both `image_url` (first frame) and `end_image_url` (last
+ * frame) is what lets the regenerated segment stitch back into the
+ * unchanged pre/post slices invisibly — the boundary frames the
+ * surrounding clips end with become the boundary frames the new
+ * segment starts/ends with.
+ *
+ * `duration` is forwarded as a string because FAL's enum lists string
+ * values ("4" .. "15"). Audio is controlled by the caller — the editor
+ * UI's "Regenerate audio" toggle maps directly to this flag.
+ */
+function buildSeedanceEditInput(req: SeedanceEditRequest): Record<string, unknown> {
+  const input: Record<string, unknown> = {
+    prompt: req.prompt,
+    image_url: req.firstFrameUrl,
+    end_image_url: req.lastFrameUrl,
+    duration: req.durationSeconds.toString(),
+    generate_audio: req.generateAudio,
+    resolution: req.resolution,
+    aspect_ratio: req.aspectRatio,
+  };
+  if (req.seed !== undefined) input.seed = req.seed;
+  return input;
+}
+
+/**
+ * Submits a Seedance image-to-video edit job to FAL's queue. Returns
+ * the request_id immediately — does NOT wait for completion. The
+ * client polls via the existing /api/generation-status route, then
+ * triggers /api/edit-video/finalize once status === COMPLETED.
+ */
+export async function submitSeedanceEditJob(
+  req: SeedanceEditRequest,
+): Promise<{ requestId: string }> {
+  ensureConfigured();
+  try {
+    const result = await fal.queue.submit(req.model, {
+      input: buildSeedanceEditInput(req),
+    });
+    return { requestId: result.request_id };
+  } catch (err: unknown) {
+    throw new Error(extractFalErrorDetail(err));
+  }
+}
+
+/**
+ * Uploads a local file (read into a Buffer) to FAL storage and returns
+ * a public URL the inference servers can fetch. Wraps `fal.storage.upload`
+ * with the same error-extraction logic as our other FAL calls.
+ *
+ * Used by the edit pipeline to publish the extracted first/last frame
+ * PNGs after FFmpeg writes them to disk.
+ */
+export async function uploadFileToFalStorage(
+  file: File,
+): Promise<string> {
+  ensureConfigured();
+  try {
+    return await fal.storage.upload(file);
   } catch (err: unknown) {
     throw new Error(extractFalErrorDetail(err));
   }

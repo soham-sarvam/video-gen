@@ -6,7 +6,7 @@
  */
 
 // ---------------------------------------------------------------------------
-// FAL endpoints — only Reference-to-Video Standard and Fast are exposed.
+// FAL endpoints — Reference-to-Video (generation) + Image-to-Video (edit).
 // ---------------------------------------------------------------------------
 export const FAL_MODELS = [
   {
@@ -27,6 +27,39 @@ export const DEFAULT_FAL_MODEL: FalModelId =
   "bytedance/seedance-2.0/fast/reference-to-video";
 
 export type FalModelId = (typeof FAL_MODELS)[number]["value"];
+
+/**
+ * Image-to-Video endpoints used by the segment editor. We pass the
+ * segment's first frame as `image_url` and the last frame as
+ * `end_image_url` so the regenerated clip is anchored to the boundary
+ * frames the unchanged pre/post segments end with — this is what makes
+ * the cut invisible after FFmpeg concat.
+ */
+export const FAL_EDIT_MODELS = [
+  {
+    value: "bytedance/seedance-2.0/image-to-video",
+    label: "Edit — Standard",
+    description: "Higher fidelity, ~2–4 min wall clock. Use for final edits.",
+    tier: "standard",
+  },
+  {
+    value: "bytedance/seedance-2.0/fast/image-to-video",
+    label: "Edit — Fast",
+    description: "720p, ~30–60s wall clock. Use for iteration.",
+    tier: "fast",
+  },
+] as const;
+
+export const DEFAULT_FAL_EDIT_MODEL: FalEditModelId =
+  "bytedance/seedance-2.0/fast/image-to-video";
+
+export type FalEditModelId = (typeof FAL_EDIT_MODELS)[number]["value"];
+
+/** All FAL model IDs the server is willing to talk to (generation + edit). */
+export const ALL_FAL_MODEL_IDS: readonly string[] = [
+  ...FAL_MODELS.map((m) => m.value),
+  ...FAL_EDIT_MODELS.map((m) => m.value),
+];
 
 // ---------------------------------------------------------------------------
 // Seedance generation parameters
@@ -193,6 +226,91 @@ export const UPLOAD_DIR_NAME = "uploads";
 export const UPLOAD_PUBLIC_PATH = "/uploads";
 
 // ---------------------------------------------------------------------------
+// Edit pipeline
+// ---------------------------------------------------------------------------
+/**
+ * Subdirectory under `public/uploads/` for editor scratch files (per-job
+ * pre/sel/post slices, extracted frames, sidecar JSON). Each edit gets
+ * its own `{editJobId}/` folder.
+ */
+export const EDIT_DIR_NAME = "edits";
+
+/**
+ * Seedance image-to-video accepts integer durations in [4, 15]. The
+ * editor enforces the same range on the user's selection so the
+ * regenerated segment slots back in cleanly.
+ */
+export const EDIT_MIN_SEGMENT_S = 4;
+export const EDIT_MAX_SEGMENT_S = 15;
+/** Source clips longer than this won't be downloaded server-side. */
+export const EDIT_MAX_SOURCE_BYTES = 200 * 1024 * 1024;
+/** Floor on prompt length for an edit description. */
+export const EDIT_PROMPT_MIN_CHARS = 5;
+
+// ---------------------------------------------------------------------------
 // Gemini
 // ---------------------------------------------------------------------------
 export const GEMINI_MODEL = "gemini-2.5-flash";
+
+// ---------------------------------------------------------------------------
+// Sarvam Bulbul (Indic TTS) — used by the editor's "Indic dialogue" mode
+// ---------------------------------------------------------------------------
+export const SARVAM_TTS_ENDPOINT = "https://api.sarvam.ai/text-to-speech";
+/**
+ * Bulbul v3 model id. Per Sarvam docs as of April 2026, v3 supports
+ * 11 Indic languages and 30+ voices. v2 is the fallback if v3 ever
+ * regresses on a particular voice — swap the constant.
+ */
+export const BULBUL_MODEL = "bulbul:v3";
+export const BULBUL_DEFAULT_SPEAKER = "anushka";
+/** WAV at 22.05 kHz is the cleanest input for FFmpeg's AAC re-encode. */
+export const BULBUL_SAMPLE_RATE = 22050;
+/** Sarvam enforces a 2500-character ceiling per request. */
+export const BULBUL_TEXT_MAX_CHARS = 2500;
+
+/**
+ * Subset of Bulbul v3 voices we surface in the picker. Bulbul has
+ * 30+; these are the ones documented as stable across all 11 Indic
+ * languages. Users can be allowed to free-form a voice id later.
+ */
+export const BULBUL_VOICES = [
+  { value: "anushka", label: "Anushka (warm female)" },
+  { value: "manisha", label: "Manisha (clear female)" },
+  { value: "vidya", label: "Vidya (mature female)" },
+  { value: "arya", label: "Arya (bright female)" },
+  { value: "abhilash", label: "Abhilash (warm male)" },
+  { value: "karun", label: "Karun (clear male)" },
+  { value: "hitesh", label: "Hitesh (deep male)" },
+] as const;
+export type BulbulVoice = (typeof BULBUL_VOICES)[number]["value"];
+export const DEFAULT_BULBUL_VOICE: BulbulVoice = "anushka";
+
+/**
+ * Sarvam uses `od-IN` for Odia where our generation form uses `or-IN`.
+ * The other 10 Indic codes are identical between the two systems.
+ */
+export function toSarvamLanguageCode(code: IndicLanguageCode): string {
+  return code === "or-IN" ? "od-IN" : code;
+}
+
+// ---------------------------------------------------------------------------
+// Edit audio modes
+// ---------------------------------------------------------------------------
+/**
+ * The three things the editor can do with the audio of the regenerated
+ * segment:
+ *   - keep_original         → mux the source segment's original audio
+ *                             (FFmpeg extract + mux) over the new video
+ *   - regenerate_seedance   → let Seedance generate ambient/SFX audio
+ *                             (sets generate_audio:true on the FAL call)
+ *   - bulbul_dialogue       → run user-provided text through Sarvam
+ *                             Bulbul v3 in the chosen Indic language,
+ *                             mux the WAV over the new video
+ */
+export const EDIT_AUDIO_MODES = [
+  "keep_original",
+  "regenerate_seedance",
+  "bulbul_dialogue",
+] as const;
+export type EditAudioMode = (typeof EDIT_AUDIO_MODES)[number];
+export const DEFAULT_EDIT_AUDIO_MODE: EditAudioMode = "keep_original";

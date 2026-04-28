@@ -51,21 +51,11 @@ function resolveFfprobePath(): string {
 const FFPROBE_PATH: string = resolveFfprobePath();
 
 /**
- * Returns the duration of an audio/video file in seconds, or null if
- * ffprobe cannot determine it (corrupted/unsupported file).
+ * Runs ffprobe with the given args and returns parsed stdout.
+ * Resolves to null on any failure so callers can decide how to react.
  */
-export async function probeDurationSeconds(filePath: string): Promise<number | null> {
+function runFfprobe(args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
-    const args = [
-      "-v",
-      "error",
-      "-show_entries",
-      "format=duration",
-      "-of",
-      "json",
-      filePath,
-    ];
-
     const proc = spawn(FFPROBE_PATH, args, { windowsHide: true });
     let stdout = "";
     let stderr = "";
@@ -80,20 +70,85 @@ export async function probeDurationSeconds(filePath: string): Promise<number | n
     proc.on("error", () => resolve(null));
     proc.on("close", (code) => {
       if (code !== 0) {
-        // Surface the probe error to the server logs, not the response.
         // eslint-disable-next-line no-console
         console.warn(`ffprobe exited ${code}: ${stderr.slice(0, 200)}`);
         resolve(null);
         return;
       }
-      try {
-        const parsed = JSON.parse(stdout) as FfprobeFormat;
-        const raw = parsed.format?.duration;
-        const seconds = raw ? Number.parseFloat(raw) : Number.NaN;
-        resolve(Number.isFinite(seconds) && seconds > 0 ? seconds : null);
-      } catch {
-        resolve(null);
-      }
+      resolve(stdout);
     });
   });
+}
+
+/**
+ * Returns the duration of an audio/video file in seconds, or null if
+ * ffprobe cannot determine it (corrupted/unsupported file).
+ */
+export async function probeDurationSeconds(filePath: string): Promise<number | null> {
+  const stdout = await runFfprobe([
+    "-v",
+    "error",
+    "-show_entries",
+    "format=duration",
+    "-of",
+    "json",
+    filePath,
+  ]);
+  if (stdout === null) return null;
+  try {
+    const parsed = JSON.parse(stdout) as FfprobeFormat;
+    const raw = parsed.format?.duration;
+    const seconds = raw ? Number.parseFloat(raw) : Number.NaN;
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+  } catch {
+    return null;
+  }
+}
+
+interface FfprobeStreams {
+  streams?: Array<{ width?: number; height?: number; codec_type?: string }>;
+}
+
+export interface VideoDimensions {
+  width: number;
+  height: number;
+}
+
+/**
+ * Returns the pixel dimensions of the first video stream, or null if
+ * ffprobe can't read them. The editor needs these to:
+ *   - pick the right Seedance resolution enum (480p/720p/1080p)
+ *   - compute the source aspect ratio so the regenerated segment comes
+ *     back at matching dims, allowing FFmpeg `-c copy` concat
+ */
+export async function probeVideoDimensions(
+  filePath: string,
+): Promise<VideoDimensions | null> {
+  const stdout = await runFfprobe([
+    "-v",
+    "error",
+    "-select_streams",
+    "v:0",
+    "-show_entries",
+    "stream=width,height",
+    "-of",
+    "json",
+    filePath,
+  ]);
+  if (stdout === null) return null;
+  try {
+    const parsed = JSON.parse(stdout) as FfprobeStreams;
+    const first = parsed.streams?.[0];
+    if (
+      typeof first?.width === "number" &&
+      typeof first?.height === "number" &&
+      first.width > 0 &&
+      first.height > 0
+    ) {
+      return { width: first.width, height: first.height };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }

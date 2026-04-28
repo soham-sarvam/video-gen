@@ -19,13 +19,17 @@
  * 4. **Indic intonation + vocal similarity** are required fields in the
  *    schema, so Gemini physically cannot return a draft without them.
  */
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, type PartUnion, Type } from "@google/genai";
 import {
   GEMINI_MODEL,
   INDIC_LANGUAGES,
   PROMPT_MAX_CHARS,
 } from "./constants";
-import type { OptimizePromptRequest, OptimizePromptResponse } from "./types";
+import type {
+  OptimizePromptRequest,
+  OptimizePromptResponse,
+  PromptOptimizerEditContext,
+} from "./types";
 import { validatePromptReferences } from "./validation";
 
 let cachedClient: GoogleGenAI | null = null;
@@ -112,6 +116,47 @@ Guiding rules for the JSON you produce:
    - negatives: free-form negative list. Always end with "Avoid on-screen text overlay, jitter, bent limbs, warped faces, extra fingers, floating objects."
 5. Aim for rich, descriptive prose in each field — Seedance rewards specificity. Do not be terse. Treat each field as 1–3 sentences, except actionBeats which can be richer.
 6. Stay under 4000 characters when all fields are concatenated. If you're approaching that limit, trim from styleAndMood and negatives last.`;
+
+/**
+ * Edit-mode prompt rules. The user is regenerating ONE segment of a
+ * longer video. Seedance image-to-video receives the segment's first
+ * and last frames as fixed visual anchors plus a text prompt; we
+ * forward those same two frames to Gemini here so it can ground the
+ * rewrite in actual pixels instead of guessing.
+ *
+ * Output schema is identical to generation mode — same JSON shape, so
+ * the existing renderer + safety net + length cap all keep working
+ * unchanged. Only the *content* of the fields changes (no @-handles,
+ * grounded in the boundary frames).
+ */
+const EDIT_SYSTEM_INSTRUCTION = `You are a senior video-edit prompt engineer for ByteDance's Seedance 2.0 image-to-video model. The user is editing ONE SEGMENT of an existing video. Seedance will regenerate just that segment using the segment's first and last frames as fixed visual anchors.
+
+You are given two images:
+- Image 1 = the FIRST frame of the segment (the fixed start state).
+- Image 2 = the LAST frame of the segment (the fixed end state).
+
+You output STRUCTURED JSON only — no markdown, no commentary. The JSON schema is the same as generation mode (subject, scene, actionBeats, cameraDirective, lightingDirective, audioDirective, styleAndMood, negatives).
+
+Edit-mode rules:
+
+1. GROUND EVERY FIELD IN WHAT YOU SEE. Describe the visible character (clothing, hair, age, build, posture), scene (location, props, depth), framing (shot size, angle), lighting (direction, colour temperature, contrast), and motion direction (camera and subject) explicitly. Vague prompts produce off-style regenerations.
+2. PRESERVE everything visible across the edit — character identity, costume, scene, lighting palette, camera language, and overall style — UNLESS the user explicitly asked to change them. The regenerated segment must feel like the same shot.
+3. APPLY ONLY THE CHANGE THE USER REQUESTED. Do not invent extra edits. If they said "change shawl to indigo", do not also change the lighting or the lens.
+4. RESPECT THE FRAME ANCHORS. The segment must start at exactly the pose/state shown in Image 1 and end at exactly the pose/state shown in Image 2. Action beats describe how the middle of the segment evolves between those two fixed states.
+5. NO @-REFERENCE SYNTAX. There are no uploaded reference assets in edit mode. Refer to the boundary frames as "the first frame" and "the last frame" in prose if you need to.
+6. AUDIO. Always include the named Indic language's intonation cues in audioDirective. The audio is muxed in a separate step, so describe what dialogue/SFX/timbre should sound like — do NOT write the actual spoken text.
+7. NEGATIVES. Always end the negatives field with: "Avoid on-screen text overlay, jitter, bent limbs, warped faces, extra fingers, floating objects, character drift from the boundary frames."
+8. Stay under 4000 characters when all fields are concatenated.
+
+Field semantics in edit mode:
+- subject: describe the visible person/object grounded in the frames; then attach the user's requested change.
+- scene: describe the visible environment from the frames; preserve unless the user asked to change it.
+- actionBeats: cover the segment duration with 1–3 beats. Each beat must respect that frame 1 (start) and frame 2 (end) are FIXED.
+- cameraDirective: infer the camera language from the frames (static / push-in / pan / dolly / handheld) and lock it for the whole segment.
+- lightingDirective: match the frame lighting unless the user asked to change it.
+- audioDirective: REQUIRED. Indic-language intonation cues. Describe sound character, not literal dialogue text.
+- styleAndMood: match the frames; only adjust if the user explicitly asked for a mood change.
+- negatives: standard negatives + boundary-frame anchor reminder.`;
 
 // ---------------------------------------------------------------------------
 // Response schema (Gemini structured output)
@@ -256,19 +301,12 @@ function appendSafetyNet(prompt: string, missing: string[]): string {
 // Public API
 // ---------------------------------------------------------------------------
 
-export async function optimizePrompt(
+function buildGenerationUserPrompt(
   req: OptimizePromptRequest,
-): Promise<OptimizePromptResponse> {
-  const client = getClient();
+  langLabel: string,
+): string {
   const manifest = buildAssetManifest(req);
-  const langLabel = languageLabel(req.language);
-  const counts: PromptCounts = {
-    images: req.referenceImages.length,
-    videos: req.referenceVideos.length,
-    audios: req.referenceAudios.length,
-  };
-
-  const userPrompt = `Target Indic language: ${langLabel} (${req.language})
+  return `Target Indic language: ${langLabel} (${req.language})
 Clip duration: ${req.duration === "auto" ? "auto (model decides between 4s and 15s)" : `${req.duration}s`}
 
 Asset manifest (you MUST reference every line in your output):
@@ -280,12 +318,86 @@ ${req.rawPrompt.trim()}
 """
 
 Produce the JSON. Audio is the most commonly-forgotten asset — the audioDirective field MUST include every @AudioN handle from the manifest with a role word. Bake in ${langLabel} intonation cues. Be specific and descriptive in every field; do not be terse.`;
+}
+
+function buildEditUserPrompt(
+  req: OptimizePromptRequest,
+  langLabel: string,
+  editContext: PromptOptimizerEditContext,
+): string {
+  const original = editContext.originalPrompt?.trim();
+  const hasFrames = Boolean(editContext.boundaryFrames);
+  const segmentDur =
+    req.duration === "auto" ? "approximately 4–15s" : `${req.duration}s`;
+
+  return `EDIT MODE — you are optimising a prompt for one segment of an existing video.
+
+Segment duration: ${segmentDur}
+Target language for new dialogue: ${langLabel} (${req.language})
+
+${
+  original
+    ? `Original generation prompt (use this for stylistic continuity — preserve this style across the edit):
+"""
+${original}
+"""
+
+`
+    : `Original generation prompt: not available. Infer style entirely from the boundary frames below.
+
+`
+}User's edit instruction:
+"""
+${req.rawPrompt.trim()}
+"""
+
+${
+  hasFrames
+    ? `Two images follow this text:
+- Image 1 = the FIRST frame of the segment being edited (fixed start state).
+- Image 2 = the LAST frame of the segment being edited (fixed end state).
+
+Inspect both frames carefully. Identify the character (clothing, hair, build, age, posture), scene (location, props, depth), framing (shot size, angle), lighting (direction, colour temperature, contrast), and motion direction. Then produce the JSON: preserve everything visible across the edit, apply ONLY the user's requested change, and respect the two frame anchors.`
+    : `No boundary frames were provided — work from the original prompt and the user's edit instruction alone, and stay conservative about anything not explicitly described.`
+}`;
+}
+
+export async function optimizePrompt(
+  req: OptimizePromptRequest,
+): Promise<OptimizePromptResponse> {
+  const client = getClient();
+  const langLabel = languageLabel(req.language);
+  const editContext = req.editContext;
+  const counts: PromptCounts = {
+    images: req.referenceImages.length,
+    videos: req.referenceVideos.length,
+    audios: req.referenceAudios.length,
+  };
+
+  const userPrompt = editContext
+    ? buildEditUserPrompt(req, langLabel, editContext)
+    : buildGenerationUserPrompt(req, langLabel);
+
+  // Build the multimodal contents array. Plain string is also valid
+  // (PartUnion = Part | string), but going with explicit parts keeps
+  // the shape consistent across both branches and makes it trivial to
+  // append more inline images later (e.g. mid-segment frames).
+  const parts: PartUnion[] = [{ text: userPrompt }];
+  const frames = editContext?.boundaryFrames;
+  if (frames) {
+    parts.push(
+      { inlineData: { mimeType: "image/jpeg", data: frames.firstFrameBase64 } },
+      { inlineData: { mimeType: "image/jpeg", data: frames.lastFrameBase64 } },
+    );
+  }
 
   const response = await client.models.generateContent({
     model: GEMINI_MODEL,
-    contents: userPrompt,
+    contents: parts,
     config: {
-      systemInstruction: SYSTEM_INSTRUCTION,
+      systemInstruction: editContext
+        ? EDIT_SYSTEM_INSTRUCTION
+        : SYSTEM_INSTRUCTION,
       temperature: 0.5,
       maxOutputTokens: 4096,
       responseMimeType: "application/json",

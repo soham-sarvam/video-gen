@@ -11,7 +11,14 @@ import {
   ASPECT_RATIOS,
   ASSET_LIMITS,
   type AssetKind,
+  BULBUL_TEXT_MAX_CHARS,
+  BULBUL_VOICES,
   DURATIONS,
+  EDIT_AUDIO_MODES,
+  EDIT_MAX_SEGMENT_S,
+  EDIT_MIN_SEGMENT_S,
+  EDIT_PROMPT_MIN_CHARS,
+  FAL_EDIT_MODELS,
   FAL_MODELS,
   INDIC_LANGUAGES,
   MAX_TOTAL_ASSETS,
@@ -192,6 +199,33 @@ export const generateVideoSchema = z.object({
   referenceAudioUrls: z.array(z.string().url()).max(ASSET_LIMITS.audio.maxCount),
 });
 
+/**
+ * Editor frames are JPEGs at ~384px max dim, q0.85 — typically
+ * 30-60 KB each. After base64 (×1.33) that's ~50-90 KB. We cap at
+ * 350 KB per frame so a single oversized image can't blow past the
+ * Next.js 1 MB body limit when combined with the rest of the payload.
+ */
+const MAX_BOUNDARY_FRAME_B64_LEN = 350_000;
+
+const boundaryFramesSchema = z.object({
+  firstFrameBase64: z
+    .string()
+    .min(1, "firstFrameBase64 cannot be empty.")
+    .max(MAX_BOUNDARY_FRAME_B64_LEN, "First boundary frame is too large."),
+  lastFrameBase64: z
+    .string()
+    .min(1, "lastFrameBase64 cannot be empty.")
+    .max(MAX_BOUNDARY_FRAME_B64_LEN, "Last boundary frame is too large."),
+});
+
+const editContextSchema = z.object({
+  originalPrompt: z
+    .string()
+    .max(PROMPT_MAX_CHARS, `Original prompt cannot exceed ${PROMPT_MAX_CHARS} characters.`)
+    .optional(),
+  boundaryFrames: boundaryFramesSchema.optional(),
+});
+
 export const optimizePromptSchema = z.object({
   rawPrompt: z
     .string()
@@ -202,6 +236,84 @@ export const optimizePromptSchema = z.object({
   referenceImages: z.array(z.object({ originalName: z.string(), mimeType: z.string() })),
   referenceVideos: z.array(z.object({ originalName: z.string(), mimeType: z.string() })),
   referenceAudios: z.array(z.object({ originalName: z.string(), mimeType: z.string() })),
+  editContext: editContextSchema.optional(),
 });
 
 export const uploadKindSchema = z.enum(["image", "video", "audio"]);
+
+// ---------------------------------------------------------------------------
+// Edit-video schemas
+// ---------------------------------------------------------------------------
+const editModelIds = FAL_EDIT_MODELS.map((m) => m.value) as [string, ...string[]];
+const bulbulVoiceIds = BULBUL_VOICES.map((v) => v.value) as [string, ...string[]];
+
+export const editVideoSubmitSchema = z
+  .object({
+    sourceVideoUrl: z.string().url(),
+    segmentStartS: z.number().nonnegative(),
+    segmentEndS: z.number().positive(),
+    prompt: z
+      .string()
+      .min(EDIT_PROMPT_MIN_CHARS, `Edit prompt must be at least ${EDIT_PROMPT_MIN_CHARS} characters.`)
+      .max(PROMPT_MAX_CHARS, `Edit prompt cannot exceed ${PROMPT_MAX_CHARS} characters.`),
+    audioMode: z.enum(EDIT_AUDIO_MODES),
+    bulbulText: z
+      .string()
+      .max(BULBUL_TEXT_MAX_CHARS, `Bulbul text cannot exceed ${BULBUL_TEXT_MAX_CHARS} characters.`)
+      .optional(),
+    bulbulLanguage: z.enum(indicCodes).optional(),
+    bulbulVoice: z.enum(bulbulVoiceIds).optional(),
+    model: z.enum(editModelIds),
+    resolution: z.enum(RESOLUTIONS).optional(),
+    aspectRatio: z.enum(ASPECT_RATIOS).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.segmentEndS <= value.segmentStartS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "segmentEndS must be greater than segmentStartS.",
+        path: ["segmentEndS"],
+      });
+      return;
+    }
+    const length = value.segmentEndS - value.segmentStartS;
+    // Allow a tiny float slop on the user's selection — we'll round to
+    // the nearest integer second when handing the value to Seedance.
+    if (length < EDIT_MIN_SEGMENT_S - 0.5) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Segment must be at least ${EDIT_MIN_SEGMENT_S}s long (got ${length.toFixed(2)}s).`,
+        path: ["segmentEndS"],
+      });
+    }
+    if (length > EDIT_MAX_SEGMENT_S + 0.5) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Segment must be at most ${EDIT_MAX_SEGMENT_S}s long (got ${length.toFixed(2)}s).`,
+        path: ["segmentEndS"],
+      });
+    }
+    // bulbul_dialogue mode requires the dialogue text + a language so
+    // Sarvam knows what to synthesise. Catch this here so the route
+    // handler doesn't have to re-implement the same conditional check.
+    if (value.audioMode === "bulbul_dialogue") {
+      if (!value.bulbulText || value.bulbulText.trim().length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Bulbul dialogue text is required when audioMode is bulbul_dialogue.",
+          path: ["bulbulText"],
+        });
+      }
+      if (!value.bulbulLanguage) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Bulbul language is required when audioMode is bulbul_dialogue.",
+          path: ["bulbulLanguage"],
+        });
+      }
+    }
+  });
+
+export const editVideoFinalizeSchema = z.object({
+  editJobId: z.string().regex(/^[a-zA-Z0-9_-]+$/, "Invalid editJobId."),
+});

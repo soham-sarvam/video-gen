@@ -35,6 +35,10 @@ export async function POST(request: NextRequest): Promise<Response> {
       referenceImages: parsed.data.referenceImages,
       referenceVideos: parsed.data.referenceVideos,
       referenceAudios: parsed.data.referenceAudios,
+      // editContext is the editor-only payload: original generation
+      // prompt + base64'd boundary frames. Absent → text-only behaviour
+      // (the original generation flow). Present → Gemini gets pixels.
+      editContext: parsed.data.editContext,
     });
     return jsonOk(result);
   } catch (error: unknown) {

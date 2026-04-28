@@ -7,9 +7,9 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(__dirname),
   },
-  // Keep ffprobe-static external so its .exe binary path resolves correctly
-  // at runtime instead of pointing into the bundled .next output.
-  serverExternalPackages: ["ffprobe-static"],
+  // Keep ffprobe-static / ffmpeg-static external so their bundled binaries
+  // resolve correctly at runtime instead of pointing into the .next output.
+  serverExternalPackages: ["ffprobe-static", "ffmpeg-static"],
 };
 
 export default nextConfig;

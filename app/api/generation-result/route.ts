@@ -5,13 +5,18 @@
  */
 import type { NextRequest } from "next/server";
 import { getSeedanceJobResult } from "@/lib/fal-client";
-import { FAL_MODELS, type FalModelId } from "@/lib/constants";
+import {
+  ALL_FAL_MODEL_IDS,
+  type FalEditModelId,
+  type FalModelId,
+} from "@/lib/constants";
 import { getErrorMessage, jsonError, jsonOk } from "@/lib/server-utils";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const MODEL_IDS: ReadonlySet<string> = new Set(FAL_MODELS.map((m) => m.value));
+// Same model whitelist as /generation-status — generation + edit ids.
+const MODEL_IDS: ReadonlySet<string> = new Set(ALL_FAL_MODEL_IDS);
 
 export async function GET(request: NextRequest): Promise<Response> {
   const requestId = request.nextUrl.searchParams.get("requestId");
@@ -22,7 +27,10 @@ export async function GET(request: NextRequest): Promise<Response> {
   if (!MODEL_IDS.has(model)) return jsonError(`Unknown model "${model}".`, 400);
 
   try {
-    const result = await getSeedanceJobResult(model as FalModelId, requestId);
+    const result = await getSeedanceJobResult(
+      model as FalModelId | FalEditModelId,
+      requestId,
+    );
     return jsonOk(result);
   } catch (err: unknown) {
     return jsonError(`Result fetch failed: ${getErrorMessage(err)}`, 502);

@@ -291,6 +291,16 @@ export function GenerationForm() {
 
   const handleReset = useCallback(() => setResult(INITIAL_RESULT), []);
 
+  // The editor returns a fresh public URL when an edit completes.
+  // Updating `videoUrl` on the same `result` object lets the user keep
+  // iterating — every subsequent edit operates on the most recent
+  // version, building up a chain of edits without leaving the panel.
+  const handleVideoEdited = useCallback(
+    (newUrl: string) =>
+      setResult((prev) => ({ ...prev, videoUrl: newUrl, status: "ready" })),
+    [],
+  );
+
   const promptCount = `${form.prompt.length} / ${PROMPT_MAX_CHARS}`;
 
   return (
@@ -426,7 +436,10 @@ export function GenerationForm() {
             queueStatus={result.queueStatus}
             queuePosition={result.queuePosition}
             logs={result.logs}
+            generationLanguage={form.language}
+            originalPrompt={form.prompt}
             onReset={handleReset}
+            onVideoEdited={handleVideoEdited}
           />
         </div>
       </Section>

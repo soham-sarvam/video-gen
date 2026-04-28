@@ -6,14 +6,21 @@
  */
 import type { NextRequest } from "next/server";
 import { getSeedanceJobStatus } from "@/lib/fal-client";
-import { FAL_MODELS, type FalModelId } from "@/lib/constants";
+import {
+  ALL_FAL_MODEL_IDS,
+  type FalEditModelId,
+  type FalModelId,
+} from "@/lib/constants";
 import { getErrorMessage, jsonError, jsonOk } from "@/lib/server-utils";
 
 export const runtime = "nodejs";
 // Status calls are fast — single HTTP round-trip to FAL.
 export const maxDuration = 30;
 
-const MODEL_IDS: ReadonlySet<string> = new Set(FAL_MODELS.map((m) => m.value));
+// Accept generation AND edit model ids. The FAL queue API uses the
+// same status/result shape regardless of which Seedance variant the
+// job is running on, so one route serves both flows.
+const MODEL_IDS: ReadonlySet<string> = new Set(ALL_FAL_MODEL_IDS);
 
 export async function GET(request: NextRequest): Promise<Response> {
   const requestId = request.nextUrl.searchParams.get("requestId");
@@ -24,7 +31,10 @@ export async function GET(request: NextRequest): Promise<Response> {
   if (!MODEL_IDS.has(model)) return jsonError(`Unknown model "${model}".`, 400);
 
   try {
-    const status = await getSeedanceJobStatus(model as FalModelId, requestId);
+    const status = await getSeedanceJobStatus(
+      model as FalModelId | FalEditModelId,
+      requestId,
+    );
     return jsonOk(status);
   } catch (err: unknown) {
     return jsonError(`Status check failed: ${getErrorMessage(err)}`, 502);
