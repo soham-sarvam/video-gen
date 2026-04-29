@@ -24,7 +24,9 @@ import {
   GEMINI_MODEL,
   INDIC_LANGUAGES,
   PROMPT_MAX_CHARS,
+  type StoryLength,
 } from "./constants";
+import { STYLE_PACKS } from "./story/style-pack-registry";
 import type { OptimizePromptRequest, OptimizePromptResponse } from "./types";
 import { validatePromptReferences } from "./validation";
 
@@ -42,6 +44,28 @@ function getClient(): GoogleGenAI {
 
 function languageLabel(code: string): string {
   return INDIC_LANGUAGES.find((l) => l.value === code)?.label ?? code;
+}
+
+function themeContext(stylePackId: string | undefined): string {
+  if (!stylePackId?.trim()) return "(theme not specified — infer from the idea)";
+  const sp = STYLE_PACKS.find((p) => p.id === stylePackId);
+  if (sp) {
+    return `${sp.label} [${sp.id}]: ${sp.description}`;
+  }
+  return `Custom theme id "${stylePackId}" — honour it visually and tonally.`;
+}
+
+function storyScopeLine(storyLength: StoryLength | undefined): string {
+  if (!storyLength) {
+    return "Story mode horizon not specified — assume a single Seedance clip unless the idea clearly implies more.";
+  }
+  if (storyLength === "single") {
+    return "Single-clip mode: one Seedance render (roughly 4–15s). Optimise for one coherent moment.";
+  }
+  if (storyLength === "half") {
+    return "Short story mode (~30s total across multiple beats later). Optimise this prompt as a strong opening or standalone beat that fits the theme.";
+  }
+  return "Minute story mode (~60s total across multiple beats later). Optimise as a cinematic opening beat; keep continuity hooks subtle.";
 }
 
 interface PromptCounts {
@@ -269,7 +293,9 @@ export async function optimizePrompt(
   };
 
   const userPrompt = `Target Indic language: ${langLabel} (${req.language})
-Clip duration: ${req.duration === "auto" ? "auto (model decides between 4s and 15s)" : `${req.duration}s`}
+Clip duration (this optimisation): ${req.duration === "auto" ? "auto (model decides between 4s and 15s)" : `${req.duration}s`}
+Creative theme / genre (user-selected): ${themeContext(req.stylePack)}
+Narrative scope: ${storyScopeLine(req.storyLength)}
 
 Asset manifest (you MUST reference every line in your output):
 ${manifest}

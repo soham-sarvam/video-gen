@@ -11,6 +11,12 @@ export interface ChainRunnerInput {
     audios: UploadedAsset[];
   };
   voiceTimbreCdnUrl: string;
+  /**
+   * Human-readable labels for each entry in `references.images`, in order.
+   * Used to append "@Image1 = Character sheet for X" to the prompt so the
+   * model knows what each reference slot contains.
+   */
+  imageLabels?: string[];
   /** Called after every state.json write so the API status route stays fresh. */
   onProgress?: (run: StoryRun) => Promise<void>;
 }

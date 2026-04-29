@@ -18,6 +18,7 @@ import {
   PROMPT_MIN_CHARS,
   REFERENCE_ROLE_WORDS,
   RESOLUTIONS,
+  STORY_LENGTHS,
   VIDEO_MODELS,
 } from "./constants";
 import { formatBytes } from "./format-utils";
@@ -220,6 +221,10 @@ export const optimizePromptSchema = z.object({
     .max(PROMPT_MAX_CHARS, `Prompt cannot exceed ${PROMPT_MAX_CHARS} characters.`),
   language: z.enum(indicCodes),
   duration: z.enum(DURATIONS),
+  /** Theme / genre id from the form (e.g. `04-comic-to-video`, `auto`). */
+  stylePack: z.string().min(1).max(80).optional(),
+  /** Story horizon when the user is in story mode (affects tone, not clip seconds). */
+  storyLength: z.enum(STORY_LENGTHS).optional(),
   referenceImages: z.array(z.object({ originalName: z.string(), mimeType: z.string() })),
   referenceVideos: z.array(z.object({ originalName: z.string(), mimeType: z.string() })),
   referenceAudios: z.array(z.object({ originalName: z.string(), mimeType: z.string() })),

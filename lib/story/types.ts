@@ -61,8 +61,19 @@ export interface BeatOutline {
   lightingNotes: string;
   /** Audio direction: SFX, ambient, music cues, voice tone. */
   audioDirection: string;
+  /** Character IDs present in this beat (auto-detected from outline). */
+  characterIds?: string[];
   /** Fast mode only — full Seedance prompt baked at outline time. */
   fullPrompt?: string;
+}
+
+/** A detected character with a generated reference sheet. */
+export interface CharacterProfile {
+  id: string;
+  name: string;
+  description: string;
+  sheetUrl?: string;
+  asset?: UploadedAsset;
 }
 
 export interface StoryOutline {
@@ -105,6 +116,8 @@ export interface BeatRun extends BeatOutline {
   trailVideoUrl?: string;
   lastFrameUrl?: string;
   endStateDescription?: string;
+  /** Human-readable error message when status === "failed". */
+  failureMessage?: string;
 }
 
 export interface StoryRun {
@@ -120,6 +133,10 @@ export interface StoryRun {
   beats: BeatRun[];
   finalVideoUrl?: string;
   finalLocalUrl?: string;
+  /** @deprecated Use characterProfiles instead. Kept for backward compat with existing state.json files. */
+  characterSheetUrl?: string;
+  /** Auto-detected characters with generated reference sheets. */
+  characterProfiles?: CharacterProfile[];
   stitchStatus: "pending" | "stitching" | "completed" | "failed";
   failure?: { stage: string; message: string };
 }

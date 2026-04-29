@@ -241,6 +241,10 @@ function rawStateToTaskStatus(raw: string | undefined): TaskStatus {
 }
 
 async function submitTask(input: GenerationInput): Promise<SubmitOutput> {
+  const refImages = input.imageUrls.filter((u) => u && u.length > 0);
+  const refVideos = input.videoUrls.filter((u) => u && u.length > 0);
+  const refAudios = input.audioUrls.filter((u) => u && u.length > 0);
+
   const body = {
     model: input.model.slug,
     input: {
@@ -253,17 +257,16 @@ async function submitTask(input: GenerationInput): Promise<SubmitOutput> {
       ...(input.seed !== undefined ? { seed: input.seed } : {}),
       ...(input.webSearch !== undefined ? { web_search: input.webSearch } : {}),
       ...(input.firstFrameUrl ? { first_frame_url: input.firstFrameUrl } : {}),
-      ...(input.imageUrls.length
-        ? { reference_image_urls: input.imageUrls }
-        : {}),
-      ...(input.videoUrls.length
-        ? { reference_video_urls: input.videoUrls }
-        : {}),
-      ...(input.audioUrls.length
-        ? { reference_audio_urls: input.audioUrls }
-        : {}),
+      ...(refImages.length ? { reference_image_urls: refImages } : {}),
+      ...(refVideos.length ? { reference_video_urls: refVideos } : {}),
+      ...(refAudios.length ? { reference_audio_urls: refAudios } : {}),
     },
   };
+
+  console.log(
+    `[kie] createTask model=${input.model.slug} dur=${toKieDuration(input.duration)} img=${refImages.length} vid=${refVideos.length} aud=${refAudios.length}`,
+  );
+
   const res = await fetch(`${KIE_API_BASE}${KIE_CREATE_TASK_PATH}`, {
     method: "POST",
     headers: { ...authHeader(), "Content-Type": "application/json" },

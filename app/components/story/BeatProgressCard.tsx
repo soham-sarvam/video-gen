@@ -21,9 +21,16 @@ export function BeatProgressCard({ beat, onReroll }: BeatProgressCardProps) {
         <video src={beat.localUrl} controls className="w-full rounded-tatva-sm" />
       )}
       {beat.status === "failed" && (
-        <Text variant="body-sm" tone="danger">
-          Failed
-        </Text>
+        <div className="flex flex-col gap-tatva-2">
+          <Text variant="body-sm" tone="danger">
+            Failed
+          </Text>
+          {beat.failureMessage && (
+            <Text variant="body-xs" tone="tertiary" lineClamp={3}>
+              {beat.failureMessage}
+            </Text>
+          )}
+        </div>
       )}
       <div className="flex items-center justify-between">
         <Text variant="body-xs" tone="tertiary">

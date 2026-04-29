@@ -8,6 +8,10 @@
  *   4. Archive the beat's video.
  *   5. If not last beat: trim trail (last 10s), upload, extract last frame for deluxe.
  *   6. Write state.json after every transition.
+ *
+ * If a beat fails after retries it is marked "failed" and the chain continues
+ * (next beat falls back to "fresh" tier since there is no trail to hand off).
+ * Only if ALL beats fail does the runner throw.
  */
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -21,6 +25,44 @@ import { extractLastFrame } from "../frame-extract";
 import { trimAndUpload } from "../video-trim";
 import type { BeatRun, ContinuityTier, StoryRun } from "../types";
 import type { ChainRunner, ChainRunnerInput } from "./types";
+
+/** Drop empty strings, undefined, and non-HTTP(S) URLs before sending to KIE. */
+function validUrls(urls: (string | undefined | null)[]): string[] {
+  return urls.filter(
+    (u): u is string => typeof u === "string" && u.length > 0 && /^https?:\/\//i.test(u),
+  );
+}
+
+/**
+ * Build a "[Reference Assets]" block mapping @image1…@imageN, @video1…, @audio1…
+ * to human-readable labels so the video model knows what each slot contains.
+ */
+function buildReferenceLegend(opts: {
+  imageLabels?: string[];
+  imageCount: number;
+  videoCount: number;
+  audioCount: number;
+  hasVoiceTimbre: boolean;
+  tier: ContinuityTier;
+}): string {
+  const lines: string[] = [];
+  if (opts.imageLabels) {
+    for (let i = 0; i < Math.min(opts.imageLabels.length, opts.imageCount); i++) {
+      lines.push(`@image${i + 1} = ${opts.imageLabels[i]}`);
+    }
+  }
+  if (opts.videoCount > 0) {
+    const videoRole = opts.tier !== "fresh"
+      ? "Previous beat's trail clip — continue seamlessly from its end state"
+      : "Reference video for motion/choreography continuity";
+    lines.push(`@video1 = ${videoRole}`);
+  }
+  if (opts.audioCount > 0 && opts.hasVoiceTimbre) {
+    lines.push(`@audio1 = Voice timbre reference — match this speaker's pitch, accent and cadence`);
+  }
+  if (lines.length === 0) return "";
+  return `[Reference Assets]\n${lines.join("\n")}\nUse these @-references in the visual prompt to anchor character identity, motion continuity, and voice timbre.`;
+}
 
 function pickTier(
   beat: { role: "opener" | "continuation"; pinFrame?: boolean },
@@ -43,16 +85,50 @@ async function pollUntilCompleted(
     const status = await provider.status(taskId, model);
     if (status.status === "completed") return await provider.result(taskId, model);
     if (status.status === "failed") {
-      throw new Error(`Beat generation failed: ${status.logs.join(" | ") || status.rawStatus}`);
+      const msg = status.logs.join(" | ") || status.rawStatus;
+      throw new Error(`Beat generation failed: ${msg}`);
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   throw new Error("Beat generation timed out (12 min ceiling).");
 }
 
+const FILE_PROCESSING_RE = /file processing failed/i;
+const MAX_RETRIES = 2;
+
+/**
+ * Submit + poll with automatic retries when KIE returns the transient
+ * "File processing failed" error (often caused by CDN propagation delay).
+ */
+async function submitWithRetry(
+  provider: ReturnType<typeof getProvider>,
+  genInput: GenerationInput,
+  model: ChainRunnerInput["model"],
+): Promise<{ taskId: string; videoUrl: string; seed: number | null }> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const submitted = await provider.submit(genInput);
+    try {
+      const result = await pollUntilCompleted(provider, submitted.taskId, model);
+      return { taskId: submitted.taskId, ...result };
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < MAX_RETRIES && FILE_PROCESSING_RE.test(lastError.message)) {
+        console.warn(
+          `[seq-runner] "File processing failed" — retrying (attempt ${attempt + 1})`,
+        );
+        await new Promise((r) => setTimeout(r, 8000 * (attempt + 1)));
+        continue;
+      }
+      throw lastError;
+    }
+  }
+  throw lastError ?? new Error("submitWithRetry exhausted");
+}
+
 export const sequentialRunner: ChainRunner = {
   async run(input: ChainRunnerInput): Promise<StoryRun> {
-    const { outline, model, references, voiceTimbreCdnUrl, onProgress } = input;
+    const { outline, model, references, voiceTimbreCdnUrl, imageLabels, onProgress } = input;
     const provider = getProvider(model);
     const beatRuns: BeatRun[] = [];
     const run: StoryRun = {
@@ -63,29 +139,52 @@ export const sequentialRunner: ChainRunner = {
 
     let previousBeat: BeatRun | null = null;
     for (const outlineBeat of outline.beats) {
-      const tier = pickTier(outlineBeat, model.provider, !!previousBeat);
+      // After a failed beat there's no trail, so reset to fresh tier.
+      const prevOk = previousBeat?.status === "completed";
+      const tier = pickTier(outlineBeat, model.provider, !!previousBeat && prevOk);
 
       // 1. Synthesize full prompt with knowledge of previous beat's actual state.
-      const fullPrompt = await synthesizeBeatPrompt({
+      const synthPrompt = await synthesizeBeatPrompt({
         beatOutline: outlineBeat,
         story: outline,
-        previousBeat,
+        previousBeat: prevOk ? previousBeat : null,
         tier,
       });
 
-      // 2. Build refs.
-      const imageUrlsBase = references.images
-        .map((a) => a.cdnUrls[model.provider])
-        .filter((u): u is string => !!u);
-      const videoUrlsBase = references.videos
-        .map((a) => a.cdnUrls[model.provider])
-        .filter((u): u is string => !!u);
-      const audioUrlsBase = [
+      // 2. Build refs — validUrls() strips empty strings and non-HTTP(S) URLs
+      //    so KIE never receives an unresolvable reference.
+      const imageUrlsBase = validUrls(
+        references.images.map((a) => a.cdnUrls[model.provider]),
+      );
+      const videoUrlsBase = validUrls(
+        references.videos.map((a) => a.cdnUrls[model.provider]),
+      );
+      const audioUrlsBase = validUrls([
         voiceTimbreCdnUrl,
-        ...references.audios
-          .map((a) => a.cdnUrls[model.provider])
-          .filter((u): u is string => !!u),
-      ];
+        ...references.audios.map((a) => a.cdnUrls[model.provider]),
+      ]);
+
+      const imageUrls = imageUrlsBase.slice(0, 9);
+      const videoUrls =
+        tier !== "fresh" && previousBeat?.trailVideoUrl
+          ? validUrls([previousBeat.trailVideoUrl])
+          : videoUrlsBase.slice(0, 3);
+      const audioUrls = audioUrlsBase.slice(0, 3);
+
+      // Append @imageN/@videoN/@audioN legend so the model knows what each ref slot is.
+      const refLegend = buildReferenceLegend({
+        imageLabels,
+        imageCount: imageUrls.length,
+        videoCount: videoUrls.length,
+        audioCount: audioUrls.length,
+        hasVoiceTimbre: !!voiceTimbreCdnUrl,
+        tier,
+      });
+      const fullPrompt = refLegend ? `${synthPrompt}\n\n${refLegend}` : synthPrompt;
+
+      console.log(
+        `[seq-runner] beat=${outlineBeat.index} tier=${tier} refs: img=${imageUrls.length} vid=${videoUrls.length} aud=${audioUrls.length}`,
+      );
 
       const genInput: GenerationInput = {
         model,
@@ -95,26 +194,20 @@ export const sequentialRunner: ChainRunner = {
         duration: String(outlineBeat.durationSeconds) as GenerationInput["duration"],
         generateAudio: outline.generateAudio ?? true,
         seed: 20260427 * outlineBeat.index,
-        imageUrls: imageUrlsBase.slice(0, 9),
-        // KIE caps combined ref_video_urls duration at 15s. The 10s trail
-        // alone leaves only 5s of headroom — adding the user's 13s clip blows
-        // the cap. On continuation beats the trail carries the consistency we
-        // need; the user's reference video already shaped the opener.
-        videoUrls:
-          tier !== "fresh" && previousBeat?.trailVideoUrl
-            ? [previousBeat.trailVideoUrl]
-            : videoUrlsBase.slice(0, 3),
-        audioUrls: audioUrlsBase.slice(0, 3),
+        imageUrls,
+        videoUrls,
+        audioUrls,
         firstFrameUrl:
-          tier === "frame-exact-motion-match" ? previousBeat?.lastFrameUrl : undefined,
+          tier === "frame-exact-motion-match"
+            ? validUrls([previousBeat?.lastFrameUrl])[0]
+            : undefined,
       };
 
-      // 3. Submit & poll.
-      const submitted = await provider.submit(genInput);
+      // 3. Submit & poll (with automatic retry on "File processing failed").
       const queued: BeatRun = {
         ...outlineBeat,
         status: "queued",
-        taskId: submitted.taskId,
+        taskId: "",
         fullPrompt,
         tier,
       };
@@ -123,53 +216,71 @@ export const sequentialRunner: ChainRunner = {
       await writeState(model.provider, outline.storyId, run);
       await onProgress?.(run);
 
-      const result = await pollUntilCompleted(provider, submitted.taskId, model);
+      try {
+        const result = await submitWithRetry(provider, genInput, model);
+        queued.taskId = result.taskId;
 
-      // 4. Archive.
-      const archived = await archiveBeatVideo({
-        provider: model.provider,
-        storyId: outline.storyId,
-        beatIndex: outlineBeat.index,
-        remoteUrl: result.videoUrl,
-        taskId: submitted.taskId,
-        tier,
-        fullPrompt,
-      });
+        // 4. Archive.
+        const archived = await archiveBeatVideo({
+          provider: model.provider,
+          storyId: outline.storyId,
+          beatIndex: outlineBeat.index,
+          remoteUrl: result.videoUrl,
+          taskId: result.taskId,
+          tier,
+          fullPrompt,
+        });
 
-      const completed: BeatRun = {
-        ...queued,
-        status: "completed",
-        videoUrl: result.videoUrl,
-        localUrl: archived.localUrl,
-        diskPath: archived.diskPath,
-      };
+        const completed: BeatRun = {
+          ...queued,
+          status: "completed",
+          videoUrl: result.videoUrl,
+          localUrl: archived.localUrl,
+          diskPath: archived.diskPath,
+        };
 
-      // 5. If not last: prep trail + frame for next beat.
-      const isLast =
-        outlineBeat.index === outline.beats[outline.beats.length - 1].index;
-      if (!isLast) {
-        completed.trailVideoUrl = await trimAndUpload(archived.diskPath, 10, model.provider);
-        const lastFramePath = path.join(tmpdir(), `last-${nanoid(8)}.png`);
-        await extractLastFrame(archived.diskPath, lastFramePath);
-        // The describer fires off in parallel — we don't strictly need its
-        // result for trail-only chains, but we pass it to the next beat.
-        try {
-          const fs = await import("node:fs/promises");
-          const buf = await fs.readFile(lastFramePath);
-          completed.endStateDescription = await describeEndState({
-            framePngBuffer: buf,
-            contextSummary: outlineBeat.oneLineSummary,
-          });
-        } catch {
-          // best-effort
+        // 5. If not last: prep trail + frame for next beat.
+        const isLast =
+          outlineBeat.index === outline.beats[outline.beats.length - 1].index;
+        if (!isLast) {
+          try {
+            completed.trailVideoUrl = await trimAndUpload(archived.diskPath, 10, model.provider);
+            const lastFramePath = path.join(tmpdir(), `last-${nanoid(8)}.png`);
+            await extractLastFrame(archived.diskPath, lastFramePath);
+            const fs = await import("node:fs/promises");
+            const buf = await fs.readFile(lastFramePath);
+            completed.endStateDescription = await describeEndState({
+              framePngBuffer: buf,
+              contextSummary: outlineBeat.oneLineSummary,
+            });
+          } catch {
+            // best-effort — next beat falls back to fresh tier
+          }
         }
-      }
 
-      beatRuns[beatRuns.length - 1] = completed;
-      run.beats = beatRuns;
-      await writeState(model.provider, outline.storyId, run);
-      await onProgress?.(run);
-      previousBeat = completed;
+        beatRuns[beatRuns.length - 1] = completed;
+        run.beats = beatRuns;
+        await writeState(model.provider, outline.storyId, run);
+        await onProgress?.(run);
+        previousBeat = completed;
+      } catch (err) {
+        console.error(
+          `[seq-runner] beat=${outlineBeat.index} failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        beatRuns[beatRuns.length - 1] = {
+          ...queued,
+          status: "failed",
+          failureMessage: err instanceof Error ? err.message : String(err),
+        };
+        run.beats = beatRuns;
+        await writeState(model.provider, outline.storyId, run);
+        await onProgress?.(run);
+        previousBeat = beatRuns[beatRuns.length - 1];
+      }
+    }
+
+    if (beatRuns.every((b) => b.status === "failed")) {
+      throw new Error("All beats failed. Check server logs for details.");
     }
 
     return run;

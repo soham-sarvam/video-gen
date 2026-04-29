@@ -40,7 +40,11 @@ import type {
   SubmitGenerationResponse,
   UploadedAsset,
 } from "@/lib/types";
-import type { StoryOutline, StoryRun } from "@/lib/story/types";
+import type {
+  CharacterProfile,
+  StoryOutline,
+  StoryRun,
+} from "@/lib/story/types";
 import type { StorySummary } from "@/app/api/story/list/route";
 import {
   validateAssetBundle,
@@ -59,7 +63,10 @@ import { VideoResultPanel } from "./VideoResultPanel";
 import { StoryLengthField } from "./story/StoryLengthField";
 import { ModeField } from "./story/ModeField";
 import { ThemeField } from "./story/ThemeField";
-import { OutlineReviewer, type CharacterSheetStatus } from "./story/OutlineReviewer";
+import {
+  OutlineReviewer,
+  type CharacterSheetStatus,
+} from "./story/OutlineReviewer";
 import { StoryTimeline } from "./story/StoryTimeline";
 
 const GENERATE_AUDIO_OPTIONS = [
@@ -74,6 +81,7 @@ const INITIAL_FORM: GenerationFormState = {
   aspectRatio: DEFAULT_ASPECT_RATIO,
   duration: DEFAULT_DURATION,
   generateAudio: false,
+  useVoiceTimbre: false,
   webSearch: false,
   seed: "",
   language: DEFAULT_INDIC_LANGUAGE,
@@ -135,7 +143,10 @@ interface GenerationFormProps {
   onStoryLoaded?: () => void;
 }
 
-export function GenerationForm({ preloadStory, onStoryLoaded }: GenerationFormProps = {}) {
+export function GenerationForm({
+  preloadStory,
+  onStoryLoaded,
+}: GenerationFormProps = {}) {
   const [form, setForm] = useState<GenerationFormState>(INITIAL_FORM);
   const [result, setResult] = useState<ResultState>(INITIAL_RESULT);
   const [optimizing, setOptimizing] = useState(false);
@@ -216,6 +227,8 @@ export function GenerationForm({ preloadStory, onStoryLoaded }: GenerationFormPr
             rawPrompt: form.prompt,
             language: form.language,
             duration: form.duration,
+            stylePack: form.stylePack,
+            storyLength: form.storyLength,
             referenceImages: form.referenceImages.map((a) => ({
               originalName: a.originalName,
               mimeType: a.mimeType,
@@ -309,11 +322,19 @@ export function GenerationForm({ preloadStory, onStoryLoaded }: GenerationFormPr
             aspectRatio: form.aspectRatio,
             duration: form.duration,
             generateAudio: form.generateAudio,
-            webSearch: activeModel.supportsWebSearch ? form.webSearch : undefined,
+            webSearch: activeModel.supportsWebSearch
+              ? form.webSearch
+              : undefined,
             seed: parsedSeed,
-            referenceImages: form.referenceImages.map((a) => ({ cdnUrls: a.cdnUrls })),
-            referenceVideos: form.referenceVideos.map((a) => ({ cdnUrls: a.cdnUrls })),
-            referenceAudios: form.referenceAudios.map((a) => ({ cdnUrls: a.cdnUrls })),
+            referenceImages: form.referenceImages.map((a) => ({
+              cdnUrls: a.cdnUrls,
+            })),
+            referenceVideos: form.referenceVideos.map((a) => ({
+              cdnUrls: a.cdnUrls,
+            })),
+            referenceAudios: form.referenceAudios.map((a) => ({
+              cdnUrls: a.cdnUrls,
+            })),
           }),
         },
       );
@@ -376,8 +397,9 @@ export function GenerationForm({ preloadStory, onStoryLoaded }: GenerationFormPr
       setCharacterSheet({ state: "loading" });
       try {
         const data = await fetchJson<{
-          asset: UploadedAsset | null;
+          profiles: CharacterProfile[];
           source: "user-images" | "video-first-frame" | "text-imagined";
+          beatCharacterMap: Record<string, string[]>;
         }>("/api/story/character-sheet", {
           method: "POST",
           body: JSON.stringify({
@@ -392,11 +414,14 @@ export function GenerationForm({ preloadStory, onStoryLoaded }: GenerationFormPr
         setCharacterSheet({
           state: "ready",
           source: data.source,
-          asset: data.asset,
+          asset: null,
+          profiles: data.profiles,
         });
       } catch (err) {
         const message =
-          err instanceof Error ? err.message : "Character sheet generation failed.";
+          err instanceof Error
+            ? err.message
+            : "Character sheet generation failed.";
         setCharacterSheet({ state: "error", message });
       }
     },
@@ -407,30 +432,33 @@ export function GenerationForm({ preloadStory, onStoryLoaded }: GenerationFormPr
     setIsPlanningStory(true);
     setCharacterSheet({ state: "idle" });
     try {
-      const data = await fetchJson<{ outline: StoryOutline; warnings: string[] }>(
-        "/api/story/outline",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            prompt: form.prompt,
-            language: form.language,
-            storyLength: form.storyLength,
-            mode: form.generationMode,
-            stylePack: form.stylePack,
-            model: form.model,
-            resolution: form.resolution,
-            aspectRatio: form.aspectRatio,
-            references: {
-              images: form.referenceImages,
-              videos: form.referenceVideos,
-              audios: form.referenceAudios,
-            },
-          }),
-        },
-      );
+      const data = await fetchJson<{
+        outline: StoryOutline;
+        warnings: string[];
+      }>("/api/story/outline", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt: form.prompt,
+          language: form.language,
+          storyLength: form.storyLength,
+          mode: form.generationMode,
+          stylePack: form.stylePack,
+          model: form.model,
+          resolution: form.resolution,
+          aspectRatio: form.aspectRatio,
+          references: {
+            images: form.referenceImages,
+            videos: form.referenceVideos,
+            audios: form.referenceAudios,
+          },
+        }),
+      });
       setStoryOutline(data.outline);
       if (data.warnings.length) {
-        toast.warning({ title: "Outline warnings", description: data.warnings.join(" · ") });
+        toast.warning({
+          title: "Outline warnings",
+          description: data.warnings.join(" · "),
+        });
       }
       // Multi-clip runs only — kick off the sheet in parallel so the user
       // can preview the canonical character before approving.
@@ -453,24 +481,22 @@ export function GenerationForm({ preloadStory, onStoryLoaded }: GenerationFormPr
     if (!storyOutline) return;
     setIsGeneratingStory(true);
     try {
-      const characterSheetAsset =
-        characterSheet.state === "ready" ? characterSheet.asset : null;
-      await fetchJson<{ storyId: string; model: string }>(
-        "/api/story/submit",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            outline: storyOutline,
-            model: form.model,
-            references: {
-              images: form.referenceImages,
-              videos: form.referenceVideos,
-              audios: form.referenceAudios,
-            },
-            characterSheetAsset,
-          }),
-        },
-      );
+      const planProfiles =
+        characterSheet.state === "ready" ? (characterSheet.profiles ?? []) : [];
+      await fetchJson<{ storyId: string; model: string }>("/api/story/submit", {
+        method: "POST",
+        body: JSON.stringify({
+          outline: storyOutline,
+          model: form.model,
+          references: {
+            images: form.referenceImages,
+            videos: form.referenceVideos,
+            audios: form.referenceAudios,
+          },
+          characterProfiles: planProfiles,
+          useVoiceTimbre: form.useVoiceTimbre,
+        }),
+      });
       const provider = form.model.startsWith("kie") ? "kie" : "fal";
       const statusUrl = `/api/story/status?storyId=${encodeURIComponent(storyOutline.storyId)}&provider=${provider}`;
       const resultUrl = `/api/story/result?storyId=${encodeURIComponent(storyOutline.storyId)}&provider=${provider}`;
@@ -492,23 +518,43 @@ export function GenerationForm({ preloadStory, onStoryLoaded }: GenerationFormPr
           setStoryRun(run);
           pollErrors = 0;
 
-          if (run.stitchStatus === "failed") {
-            toast.error(run.failure?.message ?? "Story generation failed.");
+          if (run.stitchStatus === "failed" && run.failure) {
+            toast.error(run.failure.message ?? "Story generation failed.");
             setIsGeneratingStory(false);
             return;
           }
 
-          const done = run.beats.every((b) => b.status === "completed");
-          if (done && run.stitchStatus === "completed" && run.finalLocalUrl) {
+          const allCompleted = run.beats.every((b) => b.status === "completed");
+          const allSettled = run.beats.every(
+            (b) => b.status === "completed" || b.status === "failed",
+          );
+          const anyCompleted = run.beats.some((b) => b.status === "completed");
+
+          if (
+            allCompleted &&
+            run.stitchStatus === "completed" &&
+            run.finalLocalUrl
+          ) {
             toast.success("Story ready.");
             setIsGeneratingStory(false);
             return;
           }
-          if (done && run.stitchStatus !== "completed") {
+
+          // All beats settled (some may have failed) — auto-stitch the successful ones.
+          if (allSettled && anyCompleted && run.stitchStatus !== "completed") {
             try {
               const stitched = await fetchJson<StoryRun>(resultUrl);
               setStoryRun(stitched);
-              toast.success("Story stitched.");
+              const failed = run.beats.filter(
+                (b) => b.status === "failed",
+              ).length;
+              if (failed > 0) {
+                toast.warning(
+                  `Story stitched (${failed} beat${failed > 1 ? "s" : ""} failed).`,
+                );
+              } else {
+                toast.success("Story stitched.");
+              }
               setIsGeneratingStory(false);
               return;
             } catch {
@@ -516,11 +562,21 @@ export function GenerationForm({ preloadStory, onStoryLoaded }: GenerationFormPr
               return;
             }
           }
+
+          // All beats failed — no point continuing.
+          if (allSettled && !anyCompleted) {
+            toast.error("All beats failed. Check the timeline for details.");
+            setIsGeneratingStory(false);
+            return;
+          }
+
           setTimeout(poll, 3000);
         } catch (err) {
           pollErrors += 1;
           if (pollErrors >= MAX_POLL_ERRORS) {
-            toast.error(err instanceof Error ? err.message : "Polling failed repeatedly.");
+            toast.error(
+              err instanceof Error ? err.message : "Polling failed repeatedly.",
+            );
             setIsGeneratingStory(false);
             return;
           }
@@ -602,6 +658,23 @@ export function GenerationForm({ preloadStory, onStoryLoaded }: GenerationFormPr
             items={GENERATE_AUDIO_OPTIONS}
             value={form.generateAudio ? "yes" : "no"}
             onValueChange={(v) => setField("generateAudio", v === "yes")}
+          />
+        </div>
+        <div className="flex items-center justify-between gap-tatva-8 pt-tatva-2">
+          <div className="flex flex-col gap-tatva-1">
+            <Text as="label" variant="label-md">
+              Voice timbre reference
+            </Text>
+            <Text variant="body-sm" tone="secondary">
+              Sends a Bulbul-generated voice sample as @audio1 so Seedance
+              imitates its timbre. May cause processing failures on some
+              providers.
+            </Text>
+          </div>
+          <ButtonGroup
+            items={GENERATE_AUDIO_OPTIONS}
+            value={form.useVoiceTimbre ? "yes" : "no"}
+            onValueChange={(v) => setField("useVoiceTimbre", v === "yes")}
           />
         </div>
         {activeModel.supportsWebSearch && (
@@ -723,7 +796,10 @@ export function GenerationForm({ preloadStory, onStoryLoaded }: GenerationFormPr
           )}
           <StoryTimeline
             run={storyRun}
-            onRerollBeat={(_index: number) => toast.info("Re-roll: implement in Phase 2.")}
+            onRunUpdate={(updated) => setStoryRun(updated)}
+            onRerollBeat={(_index: number) =>
+              toast.info("Re-roll: implement in Phase 2.")
+            }
             onReset={() => {
               setStoryOutline(null);
               setStoryRun(null);
@@ -743,7 +819,9 @@ export function GenerationForm({ preloadStory, onStoryLoaded }: GenerationFormPr
               disabled={result.status === "generating"}
               onClick={handleGenerate}
             >
-              {result.status === "generating" ? "Generating…" : "Generate video"}
+              {result.status === "generating"
+                ? "Generating…"
+                : "Generate video"}
             </Button>
           </div>
 

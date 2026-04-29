@@ -11,7 +11,7 @@ import { z } from "zod";
 import { getVideoModelById } from "@/lib/constants";
 import { pickRunner } from "@/lib/story/runners";
 import { writeState } from "@/lib/story/archive";
-import { prepareCharacterSheet } from "@/lib/story/character-sheet";
+import { prepareCharacterSheets } from "@/lib/story/character-sheet";
 import { getCachedVoice } from "@/lib/voice/voice-cache";
 import {
   getErrorMessage,
@@ -32,8 +32,12 @@ const SubmitSchema = z.object({
     videos: z.array(z.any()).default([]),
     audios: z.array(z.any()).default([]),
   }),
-  /** Pre-generated character sheet from /api/story/character-sheet, if any. */
+  /** @deprecated Legacy single-sheet path. Use characterProfiles instead. */
   characterSheetAsset: z.any().optional(),
+  /** Plan-time character profiles from /api/story/character-sheet (preferred). */
+  characterProfiles: z.array(z.any()).default([]),
+  /** When false (default), skip Bulbul voice timbre to avoid KIE processing errors. */
+  useVoiceTimbre: z.boolean().default(false),
 });
 
 export async function POST(request: NextRequest): Promise<Response> {
@@ -47,7 +51,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   if (!parsed.success) {
     return jsonError(parsed.error.issues.map((i) => i.message).join("; "), 400);
   }
-  const { outline, model: modelId, references, characterSheetAsset } = parsed.data;
+  const { outline, model: modelId, references, characterSheetAsset, characterProfiles: planProfiles, useVoiceTimbre } = parsed.data;
   const origin = getRequestOrigin(request);
 
   let model;
@@ -60,13 +64,11 @@ export async function POST(request: NextRequest): Promise<Response> {
   // Voice timbre source policy:
   //   1. If the user uploaded a reference audio, use its FIRST entry as @audio1
   //      (the user's voice — exactly what Seedance should imitate for lip-sync).
-  //   2. Only fall back to a Bulbul-generated cached sample when the user
-  //      uploaded no audio at all.
-  //
-  // When (1) wins, that audio is REMOVED from `references.audios` before being
-  //   passed to the runner so it doesn't get duplicated as @audio2 on top of
-  //   @audio1 — Seedance has a 3-audio cap and we don't want to waste a slot.
-  let voiceUrl: string;
+  //   2. If useVoiceTimbre is enabled, fall back to a Bulbul-generated cached
+  //      sample when the user uploaded no audio at all.
+  //   3. Otherwise (default), skip voice timbre entirely to avoid KIE
+  //      "File processing failed" errors caused by the calibration audio.
+  let voiceUrl = "";
   let runnerAudios = references.audios;
   try {
     const userAudio = references.audios?.[0];
@@ -74,7 +76,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     if (userAudioCdn) {
       voiceUrl = userAudioCdn;
       runnerAudios = references.audios.slice(1);
-    } else {
+    } else if (useVoiceTimbre) {
       const voice = await getCachedVoice({
         languageCode: outline.language,
         speaker: outline.voiceTimbreSpeaker,
@@ -82,11 +84,12 @@ export async function POST(request: NextRequest): Promise<Response> {
       voiceUrl =
         (model.provider === "kie" ? voice.cdnUrls.kie : voice.cdnUrls.fal) ?? "";
       if (!voiceUrl) {
-        throw new Error("Voice CDN upload failed for active provider.");
+        console.warn("[story/submit] Voice CDN upload failed — continuing without voice timbre.");
       }
     }
   } catch (err) {
-    return jsonError(`Voice prep failed: ${getErrorMessage(err)}`, 502);
+    console.warn(`[story/submit] Voice prep failed — continuing without: ${getErrorMessage(err)}`);
+    voiceUrl = "";
   }
 
   // Persist initial state immediately so /status has something to read.
@@ -104,27 +107,78 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   // Fire-and-forget the runner. We don't await it — the route returns
   // immediately after kicking it off. state.json is the contract for /status.
-  // Character sheet prep also runs in the fire-and-forget block so it
-  // doesn't push us past the 30s submit budget.
+  //
+  // Character sheet resolution priority:
+  //   1. Plan-time profiles (from /api/story/character-sheet, sent as characterProfiles)
+  //   2. Legacy single-sheet asset (characterSheetAsset, deprecated)
+  //   3. Auto-generate via prepareCharacterSheets (only if no user images and no plan-time profiles)
   const runner = pickRunner(outline.mode);
   void (async () => {
     let runnerImages: UploadedAsset[] = references.images;
-    if (characterSheetAsset && characterSheetAsset.cdnUrls) {
+    let characterProfilesForState: import("@/lib/story/types").CharacterProfile[] | undefined;
+
+    // --- 1. Reuse plan-time profiles (preferred: avoids re-generating sheets) ---
+    const typedPlanProfiles = planProfiles as import("@/lib/story/types").CharacterProfile[];
+    const planAssets = typedPlanProfiles
+      .filter((p) => p.asset && p.asset.cdnUrls)
+      .map((p) => p.asset!);
+
+    if (planAssets.length > 0) {
+      runnerImages = [...(planAssets as UploadedAsset[]), ...references.images];
+      characterProfilesForState = typedPlanProfiles.map(({ asset: _a, ...rest }) => rest);
+      console.log(`[story/submit] Reusing ${planAssets.length} plan-time character sheet(s).`);
+    } else if (characterSheetAsset && characterSheetAsset.cdnUrls) {
+      // --- 2. Legacy single-sheet path ---
       runnerImages = [characterSheetAsset as UploadedAsset, ...references.images];
     } else if (references.images.length === 0) {
+      // --- 3. Auto-generate (no plan-time profiles and no user images) ---
       try {
-        const prep = await prepareCharacterSheet({
+        const prep = await prepareCharacterSheets({
           outline,
           references: { ...references, audios: runnerAudios },
           origin,
         });
-        if (prep.asset) runnerImages = [prep.asset];
+        if (prep.profiles.length > 0) {
+          const sheetAssets = prep.profiles
+            .filter((p) => p.asset)
+            .map((p) => p.asset!);
+          runnerImages = [...sheetAssets, ...references.images];
+          characterProfilesForState = prep.profiles.map(({ asset: _a2, ...rest }) => rest);
+
+          for (const [idx, charIds] of Object.entries(prep.beatCharacterMap)) {
+            const beat = outline.beats.find((b: { index: number }) => b.index === Number(idx));
+            if (beat) beat.characterIds = charIds;
+          }
+        }
       } catch (err) {
-        // Non-fatal — proceed without a sheet rather than failing the run.
         console.warn(
           `[story/submit] character sheet prep failed: ${getErrorMessage(err)}`,
         );
       }
+    }
+
+    // Persist character profiles to state.json
+    if (characterProfilesForState && characterProfilesForState.length > 0) {
+      const { readState: rs } = await import("@/lib/story/archive");
+      const cur = await rs(model.provider, outline.storyId).catch(() => null);
+      if (cur && typeof cur === "object") {
+        await writeState(model.provider, outline.storyId, {
+          ...cur,
+          characterProfiles: characterProfilesForState,
+          characterSheetUrl: characterProfilesForState[0]?.sheetUrl,
+        }).catch(() => undefined);
+      }
+    }
+
+    // Build labels for @image1…@imageN so the prompt tells the model
+    // what each reference slot contains (e.g. "Character sheet for The Young Girl").
+    const imageLabels: string[] = [];
+    if (characterProfilesForState) {
+      for (const p of characterProfilesForState) {
+        if (p.sheetUrl) imageLabels.push(`Character reference sheet for "${p.name}"`);
+      }
+    } else if (characterSheetAsset?.cdnUrls) {
+      imageLabels.push("Character reference sheet");
     }
 
     await runner
@@ -137,25 +191,23 @@ export async function POST(request: NextRequest): Promise<Response> {
           audios: runnerAudios,
         },
         voiceTimbreCdnUrl: voiceUrl,
+        imageLabels,
       })
       .catch(async (err) => {
-      // Preserve whatever the runner had already written to state.json — it
-      // includes the failing beat's taskId, fullPrompt, and prior completed
-      // beats. Falling back to raw outline beats erases that diagnostic info.
-      const { readState } = await import("@/lib/story/archive");
-      const current = await readState<typeof outline & { beats: typeof outline.beats }>(
-        model.provider,
-        outline.storyId,
-      ).catch(() => null);
-      const failureState = {
-        ...(current ?? { ...outline, beats: outline.beats }),
-        stitchStatus: "failed" as const,
-        failure: { stage: "runner", message: getErrorMessage(err) },
-      };
-      await writeState(model.provider, outline.storyId, failureState).catch(
-        () => undefined,
-      );
-    });
+        const { readState } = await import("@/lib/story/archive");
+        const current = await readState<typeof outline & { beats: typeof outline.beats }>(
+          model.provider,
+          outline.storyId,
+        ).catch(() => null);
+        const failureState = {
+          ...(current ?? { ...outline, beats: outline.beats }),
+          stitchStatus: "failed" as const,
+          failure: { stage: "runner", message: getErrorMessage(err) },
+        };
+        await writeState(model.provider, outline.storyId, failureState).catch(
+          () => undefined,
+        );
+      });
   })();
 
   return jsonOk({ storyId: outline.storyId, model: modelId });

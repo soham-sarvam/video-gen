@@ -82,10 +82,10 @@ export async function outlineStory(
   const client = getClient();
   const stylePackId = req.stylePack === "auto"
     ? pickAutoStylePack(req.prompt, {
-        imageCount: req.references.images.length,
-        videoCount: req.references.videos.length,
-        audioCount: req.references.audios.length,
-      })
+      imageCount: req.references.images.length,
+      videoCount: req.references.videos.length,
+      audioCount: req.references.audios.length,
+    })
     : req.stylePack;
 
   // Default voice from current language; planner can override.
@@ -111,9 +111,10 @@ export async function outlineStory(
     `Return a StoryOutline JSON.`,
   ].join("\n");
 
-  // Fast mode requires a fullPrompt per beat — that doubles the response size.
-  // Bump the output token budget so structured-JSON responses don't truncate.
-  const maxOutputTokens = req.mode === "fast" ? 8192 : 4096;
+  // 60s stories produce 6-8 beats, each with rich fields (sceneDescription,
+  // cameraDirection, lightingNotes, audioDirection, dialogue). The structured
+  // JSON easily needs 6-8K tokens. Fast mode adds fullPrompt per beat on top.
+  const maxOutputTokens = req.mode === "fast" ? 16384 : 8192;
 
   const callOnce = async (extra: string): Promise<StoryOutline> => {
     const res = await client.models.generateContent({
@@ -125,7 +126,7 @@ export async function outlineStory(
         maxOutputTokens,
         responseMimeType: "application/json",
         responseSchema: RESPONSE_SCHEMA as never,
-        thinkingConfig: { thinkingBudget: 4096 },
+        thinkingConfig: { thinkingBudget: 2048 },
       },
     });
     const text = res.text?.trim() ?? "";
@@ -172,7 +173,7 @@ export async function outlineStory(
     // Parse failed — retry once with a hint to keep dialogue strings short.
     const retry = await safeCall(
       "Your previous response was not valid JSON (likely truncation). " +
-        "Reduce per-beat fullPrompt verbosity, escape internal quotes, and ensure the response fits within the token budget.",
+      "Reduce per-beat fullPrompt verbosity, escape internal quotes, and ensure the response fits within the token budget.",
     );
     if (!retry.outline) {
       throw new Error(retry.parseError ?? first.parseError ?? "Outline parse failed twice.");

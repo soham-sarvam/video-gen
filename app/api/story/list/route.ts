@@ -18,6 +18,12 @@ import { jsonOk } from "@/lib/server-utils";
 
 export const runtime = "nodejs";
 
+export interface CharacterSummary {
+  id: string;
+  name: string;
+  sheetUrl?: string;
+}
+
 export interface StorySummary {
   storyId: string;
   provider: Provider;
@@ -27,6 +33,8 @@ export interface StorySummary {
   totalDurationSeconds: number;
   stitchStatus: string;
   finalLocalUrl?: string;
+  characterSheetUrl?: string;
+  characterProfiles?: CharacterSummary[];
   createdAt: string;
   stylePackId: string;
 }
@@ -63,6 +71,12 @@ export async function GET(): Promise<Response> {
           totalDurationSeconds: run.totalDurationSeconds,
           stitchStatus: run.stitchStatus,
           finalLocalUrl: run.finalLocalUrl,
+          characterSheetUrl: run.characterSheetUrl,
+          characterProfiles: run.characterProfiles?.map((p) => ({
+            id: p.id,
+            name: p.name,
+            sheetUrl: p.sheetUrl,
+          })),
           createdAt: fileStat.mtime.toISOString(),
           stylePackId: run.stylePackId,
         });

@@ -1,5 +1,7 @@
 import type { NextRequest } from "next/server";
 import { optimizePrompt } from "@/lib/gemini-client";
+import { PROMPT_MAX_CHARS } from "@/lib/constants";
+import { sanitizeUserPrompt } from "@/lib/prompt-sanitize";
 import { optimizePromptSchema } from "@/lib/validation";
 import { getErrorMessage, jsonError, jsonOk } from "@/lib/server-utils";
 import type {
@@ -19,10 +21,14 @@ export async function POST(request: NextRequest): Promise<Response> {
   } catch {
     return jsonError("Request body must be valid JSON.", 400);
   }
+  if (body && typeof body === "object" && "rawPrompt" in body && typeof (body as { rawPrompt: unknown }).rawPrompt === "string") {
+    const b = body as { rawPrompt: string };
+    b.rawPrompt = sanitizeUserPrompt(b.rawPrompt, PROMPT_MAX_CHARS);
+  }
 
   const parsed = optimizePromptSchema.safeParse(body);
   if (!parsed.success) {
-    return jsonError(parsed.error.issues.map((i) => i.message).join("; "), 400);
+    return jsonError("Could not optimise that prompt. Check length and language, then try again.", 400);
   }
 
   try {
@@ -32,6 +38,8 @@ export async function POST(request: NextRequest): Promise<Response> {
       // our literal-union types so the optimizer keeps strict typing.
       language: parsed.data.language as IndicLanguageCode,
       duration: parsed.data.duration as Duration,
+      stylePack: parsed.data.stylePack,
+      storyLength: parsed.data.storyLength,
       referenceImages: parsed.data.referenceImages,
       referenceVideos: parsed.data.referenceVideos,
       referenceAudios: parsed.data.referenceAudios,

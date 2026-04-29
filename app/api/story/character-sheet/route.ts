@@ -11,7 +11,7 @@
  */
 import type { NextRequest } from "next/server";
 import { z } from "zod";
-import { prepareCharacterSheet } from "@/lib/story/character-sheet";
+import { prepareCharacterSheets } from "@/lib/story/character-sheet";
 import { getErrorMessage, getRequestOrigin, jsonError, jsonOk } from "@/lib/server-utils";
 
 export const runtime = "nodejs";
@@ -38,12 +38,16 @@ export async function POST(request: NextRequest): Promise<Response> {
     return jsonError(parsed.error.issues.map((i) => i.message).join("; "), 400);
   }
   try {
-    const result = await prepareCharacterSheet({
+    const result = await prepareCharacterSheets({
       outline: parsed.data.outline,
       references: parsed.data.references,
       origin: getRequestOrigin(request),
     });
-    return jsonOk(result);
+    return jsonOk({
+      profiles: result.profiles,
+      source: result.source,
+      beatCharacterMap: result.beatCharacterMap,
+    });
   } catch (err) {
     return jsonError(`Character sheet generation failed: ${getErrorMessage(err)}`, 502);
   }

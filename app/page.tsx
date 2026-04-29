@@ -21,6 +21,7 @@ export default function Home() {
         open={sidebarOpen}
         onToggle={() => setSidebarOpen((o) => !o)}
         onSelectStory={handleSelectStory}
+        activeStoryId={selectedStory?.storyId}
       />
       <div className="border-b border-tatva-border-secondary bg-tatva-surface-secondary px-tatva-12 py-tatva-8">
         <Header

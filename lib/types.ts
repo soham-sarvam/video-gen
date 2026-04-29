@@ -70,6 +70,8 @@ export interface GenerationFormState {
   aspectRatio: AspectRatio;
   duration: Duration;
   generateAudio: boolean;
+  /** Send a Bulbul-generated voice timbre sample as @audio1 to Seedance. */
+  useVoiceTimbre: boolean;
   webSearch: boolean;
   seed: string; // kept as string for the input; coerced to int server-side
   language: IndicLanguageCode;
@@ -139,6 +141,10 @@ export interface OptimizePromptRequest {
   referenceVideos: Pick<UploadedAsset, "originalName" | "mimeType">[];
   referenceAudios: Pick<UploadedAsset, "originalName" | "mimeType">[];
   duration: Duration;
+  /** Theme / genre from the form — steers visual and pacing language. */
+  stylePack?: string;
+  /** Story length when in story mode — total narrative horizon, not one clip's seconds. */
+  storyLength?: StoryLength;
 }
 
 export interface OptimizePromptResponse {
